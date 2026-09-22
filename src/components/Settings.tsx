@@ -30,11 +30,13 @@ import { DeviceSetupModal } from "./DeviceSetupModal";
 interface Props {
   config: SyncConfig;
   onConfigUpdated: (newConfig: SyncConfig) => void;
+  onOpenAbout?: () => void;
 }
 
 export const Settings: React.FC<Props> = ({
   config,
   onConfigUpdated,
+  onOpenAbout,
 }) => {
   const [formData, setFormData] = useState<SyncConfig>(config);
   const [saving, setSaving] = useState(false);
@@ -552,7 +554,14 @@ export const Settings: React.FC<Props> = ({
 
       {/* App Version Info */}
       <div className="pt-4 border-t border-zinc-900 text-center text-xs text-zinc-500 font-mono">
-        Kindle Glean v{packageJson.version}
+        <button
+          type="button"
+          onClick={onOpenAbout}
+          className="hover:text-indigo-400 hover:underline transition-colors cursor-pointer inline-flex items-center gap-1.5"
+          title="アプリについての詳細・更新確認"
+        >
+          Kindle Glean v{packageJson.version}
+        </button>
       </div>
 
       {/* Profile Edit Modal */}

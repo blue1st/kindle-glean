@@ -64,6 +64,16 @@ export async function openFolder(path?: string): Promise<void> {
   await invoke("open_folder", { path: path || null });
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } catch (err) {
+    console.warn("Failed to open URL via @tauri-apps/plugin-opener, falling back to window.open", err);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
 export async function getSyncedCounts(): Promise<SyncedCounts> {
   return await invoke<SyncedCounts>("get_synced_counts");
 }

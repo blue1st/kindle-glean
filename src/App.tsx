@@ -14,8 +14,14 @@ import {
 import { Dashboard } from "./components/Dashboard";
 import { Settings } from "./components/Settings";
 import { ContentViewer, ViewerTab } from "./components/ContentViewer";
+import { AboutModal } from "./components/AboutModal";
 import { BookOpen, Layers, Home, Settings as SettingsIcon } from "lucide-react";
 import packageJson from "../package.json";
+import {
+  GitHubRelease,
+  fetchLatestRelease,
+  isNewVersionAvailable,
+} from "./utils/versionCheck";
 import "./App.css";
 
 type ActiveView =
@@ -30,6 +36,8 @@ export function App() {
   const [syncHistory, setSyncHistory] = useState<SyncStats[]>([]);
   const [syncedCounts, setSyncedCounts] = useState<SyncedCounts | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
 
   const refreshHistoryAndCounts = () => {
     getSyncHistory().then(setSyncHistory);
@@ -57,6 +65,9 @@ export function App() {
 
   useEffect(() => {
     loadAll();
+    fetchLatestRelease().then((rel) => {
+      if (rel) setLatestRelease(rel);
+    });
 
     const unlistenConnected = onDeviceConnected((dev) => {
       setDevice(dev);
@@ -119,9 +130,23 @@ export function App() {
                 <h1 className="text-base font-bold tracking-tight text-zinc-100 group-hover:text-indigo-300 transition-colors">
                   Kindle Glean
                 </h1>
-                <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-700/50">
-                  v{packageJson.version}
-                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAboutOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-zinc-800/90 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 hover:border-indigo-500/50 transition-all cursor-pointer shadow-sm"
+                  title="アプリ情報・更新確認"
+                >
+                  <span>v{packageJson.version}</span>
+                  {latestRelease && isNewVersionAvailable(packageJson.version, latestRelease.tag_name) && (
+                    <span className="flex h-1.5 w-1.5 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
+                    </span>
+                  )}
+                </button>
                 {activeView.type !== "home" && (
                   <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700/60 font-medium">
                     {activeView.type === "settings"
@@ -203,9 +228,17 @@ export function App() {
           <Settings
             config={config}
             onConfigUpdated={(newCfg) => setConfig(newCfg)}
+            onOpenAbout={() => setIsAboutOpen(true)}
           />
         )}
       </main>
+
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
+        latestRelease={latestRelease}
+        onUpdateLatestRelease={setLatestRelease}
+      />
     </div>
   );
 }
