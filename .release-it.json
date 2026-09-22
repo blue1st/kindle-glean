@@ -1,0 +1,20 @@
+{
+  "git": {
+    "commitMessage": "chore: release v${version}",
+    "tagName": "v${version}",
+    "requireCleanWorkingDir": true,
+    "push": true,
+    "addUntrackedFiles": false
+  },
+  "github": {
+    "release": true,
+    "releaseName": "Kindle Glean v${version}"
+  },
+  "npm": {
+    "publish": false
+  },
+  "hooks": {
+    "before:init": ["npm test"],
+    "after:bump": "node scripts/sync-version.cjs ${version} && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock"
+  }
+}

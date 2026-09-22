@@ -1,0 +1,40 @@
+[package]
+name = "kindle-glean"
+version = "0.1.0"
+description = "Extract highlights, notes, and vocabulary from Kindle to local Markdown"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tauri_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.33", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.11"
+sha2 = "0.10"
+sysinfo = "0.33"
+walkdir = "2.5"
+zip = "2.2"
+thiserror = "2.0"
+directories = "6.0"
+log = "0.4"
+env_logger = "0.11"
+base64 = "0.22"
+rusb = "0.9.4"

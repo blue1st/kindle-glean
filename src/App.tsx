@@ -1,0 +1,213 @@
+import { useState, useEffect } from "react";
+import { DeviceInfo, SyncConfig, SyncStats, SyncedCounts } from "./types";
+import {
+  getConfig,
+  detectDevice,
+  getSyncHistory,
+  getSyncedCounts,
+  onDeviceConnected,
+  onDeviceDisconnected,
+  onSyncCompleted,
+  onTriggerSync,
+  syncNow,
+} from "./api";
+import { Dashboard } from "./components/Dashboard";
+import { Settings } from "./components/Settings";
+import { ContentViewer, ViewerTab } from "./components/ContentViewer";
+import { BookOpen, Layers, Home, Settings as SettingsIcon } from "lucide-react";
+import packageJson from "../package.json";
+import "./App.css";
+
+type ActiveView =
+  | { type: "home" }
+  | { type: "content"; tab: ViewerTab; filterType?: "all" | "highlight" | "note" }
+  | { type: "settings" };
+
+export function App() {
+  const [activeView, setActiveView] = useState<ActiveView>({ type: "home" });
+  const [device, setDevice] = useState<DeviceInfo | null>(null);
+  const [config, setConfig] = useState<SyncConfig | null>(null);
+  const [syncHistory, setSyncHistory] = useState<SyncStats[]>([]);
+  const [syncedCounts, setSyncedCounts] = useState<SyncedCounts | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refreshHistoryAndCounts = () => {
+    getSyncHistory().then(setSyncHistory);
+    getSyncedCounts().then(setSyncedCounts);
+  };
+
+  const loadAll = async () => {
+    try {
+      const [cfg, dev, hist, counts] = await Promise.all([
+        getConfig(),
+        detectDevice(),
+        getSyncHistory(),
+        getSyncedCounts(),
+      ]);
+      setConfig(cfg);
+      setDevice(dev);
+      setSyncHistory(hist);
+      setSyncedCounts(counts);
+    } catch (err) {
+      console.error("Initialization error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAll();
+
+    const unlistenConnected = onDeviceConnected((dev) => {
+      setDevice(dev);
+    });
+    const unlistenDisconnected = onDeviceDisconnected(() => {
+      setDevice(null);
+    });
+    const unlistenSyncCompleted = onSyncCompleted(() => {
+      refreshHistoryAndCounts();
+    });
+    const unlistenTrigger = onTriggerSync(async () => {
+      try {
+        await syncNow();
+        refreshHistoryAndCounts();
+      } catch (err) {
+        console.error("Tray sync failed:", err);
+      }
+    });
+
+    return () => {
+      unlistenConnected.then((f) => f());
+      unlistenDisconnected.then((f) => f());
+      unlistenSyncCompleted.then((f) => f());
+      unlistenTrigger.then((f) => f());
+    };
+  }, []);
+
+  const refreshDevice = async () => {
+    const dev = await detectDevice();
+    setDevice(dev);
+  };
+
+  if (loading || !config) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-zinc-950 text-zinc-400">
+        <div className="flex items-center gap-3">
+          <Layers className="w-6 h-6 animate-pulse text-indigo-500" />
+          <span className="text-sm font-medium">Kindle Glean を起動中...</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans">
+      {/* App Navigation Bar */}
+      <header className="border-b border-zinc-800/80 bg-zinc-900/40 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+          {/* Logo & Brand: Clickable to return to Home */}
+          <div
+            onClick={() => setActiveView({ type: "home" })}
+            className="flex items-center gap-3 cursor-pointer group select-none transition-opacity hover:opacity-95"
+            title="ホーム画面に戻る"
+          >
+            <div className="p-2 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/30 group-hover:scale-105 transition-transform">
+              <BookOpen className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold tracking-tight text-zinc-100 group-hover:text-indigo-300 transition-colors">
+                  Kindle Glean
+                </h1>
+                <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-700/50">
+                  v{packageJson.version}
+                </span>
+                {activeView.type !== "home" && (
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700/60 font-medium">
+                    {activeView.type === "settings"
+                      ? "全体設定"
+                      : activeView.tab === "clippings"
+                      ? activeView.filterType === "highlight"
+                        ? "ハイライト一覧"
+                        : activeView.filterType === "note"
+                        ? "読書メモ一覧"
+                        : "ハイライト & メモ"
+                      : activeView.tab === "notebooks"
+                      ? "手書きノート"
+                      : "単語帳・語彙"}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                バックグラウンド常駐中
+              </div>
+            </div>
+          </div>
+
+          {/* Right Header Navigation & Actions */}
+          <div className="flex items-center gap-2">
+            {activeView.type !== "home" && (
+              <button
+                onClick={() => setActiveView({ type: "home" })}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700/60 transition-colors shadow-sm"
+              >
+                <Home className="w-3.5 h-3.5 text-indigo-400" />
+                ホームに戻る
+              </button>
+            )}
+
+            <button
+              onClick={() =>
+                setActiveView((prev) =>
+                  prev.type === "settings" ? { type: "home" } : { type: "settings" }
+                )
+              }
+              title="アプリ全体設定"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-all ${
+                activeView.type === "settings"
+                  ? "bg-zinc-800 text-indigo-300 border-indigo-500/50 shadow-sm"
+                  : "bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-zinc-800"
+              }`}
+            >
+              <SettingsIcon className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">設定</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-6xl w-full mx-auto p-6 md:p-8">
+        {activeView.type === "home" && (
+          <Dashboard
+            device={device}
+            onRefreshDevice={refreshDevice}
+            syncHistory={syncHistory}
+            counts={syncedCounts}
+            onSyncFinished={refreshHistoryAndCounts}
+            config={config}
+            onNavigateToContent={(tab, filterType) => setActiveView({ type: "content", tab, filterType })}
+          />
+        )}
+
+        {activeView.type === "content" && (
+          <ContentViewer
+            config={config}
+            initialTab={activeView.tab}
+            initialClipType={activeView.filterType}
+          />
+        )}
+
+        {activeView.type === "settings" && (
+          <Settings
+            config={config}
+            onConfigUpdated={(newCfg) => setConfig(newCfg)}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+export default App;
