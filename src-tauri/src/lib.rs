@@ -141,8 +141,22 @@ fn sync_now(
 
     let actual_sync_path = if is_mtp {
         let cache_dir = std::env::temp_dir().join("kindle_scribe_cache");
-        device::MtpClient::pull_scribe_files(&cache_dir, Some(&progress_cb))?;
-        cache_dir.to_string_lossy().to_string()
+        match device::MtpClient::pull_scribe_files(&cache_dir, Some(&progress_cb)) {
+            Ok(_) => cache_dir.to_string_lossy().to_string(),
+            Err(e) => {
+                log::warn!("MTP pull failed in sync_now: {}. Attempting UMS fallback.", e);
+                // Fallback: if mount path is a real filesystem path, try UMS sync
+                if !path.starts_with("mtp://") && !path.starts_with("usb://") && std::path::Path::new(&path).exists() {
+                    log::info!("Falling back to UMS mount path for sync: {}", path);
+                    path.clone()
+                } else {
+                    return Err(format!(
+                        "MTP同期エラー: {}. Kindle端末の画面ロック解除とUSB接続を確認してください。",
+                        e
+                    ));
+                }
+            }
+        }
     } else {
         progress_cb(crate::models::SyncProgress {
             step: "checking".to_string(),
@@ -550,10 +564,20 @@ fn start_device_watcher(app_handle: AppHandle, db: Arc<Database>, sync_lock: Arc
 
                             let sync_path = if device.connection_mode == "MTP" {
                                 let cache_dir = std::env::temp_dir().join("kindle_scribe_cache");
-                                if device::MtpClient::pull_scribe_files(&cache_dir, Some(&on_progress)).is_ok() {
-                                    Some(cache_dir.to_string_lossy().to_string())
-                                } else {
-                                    None
+                                match device::MtpClient::pull_scribe_files(&cache_dir, Some(&on_progress)) {
+                                    Ok(_) => Some(cache_dir.to_string_lossy().to_string()),
+                                    Err(e) => {
+                                        log::warn!("MTP pull failed: {}. Checking if UMS mount path is available as fallback.", e);
+                                        // Fallback: if mount_path is a real filesystem path (not mtp:// or usb://),
+                                        // try syncing from it directly (the device may actually be UMS-mounted)
+                                        let mp = &device.mount_path;
+                                        if !mp.starts_with("mtp://") && !mp.starts_with("usb://") && std::path::Path::new(mp).exists() {
+                                            log::info!("Falling back to UMS mount path: {}", mp);
+                                            Some(mp.clone())
+                                        } else {
+                                            None
+                                        }
+                                    }
                                 }
                             } else {
                                 Some(device.mount_path.clone())

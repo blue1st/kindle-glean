@@ -14,13 +14,25 @@ impl DeviceDetector {
             let mount_point = disk.mount_point();
             let disk_name = disk.name().to_string_lossy();
 
+            log::debug!(
+                "Scanning disk: name='{}', mount='{}', fs='{}'",
+                disk_name,
+                mount_point.display(),
+                disk.file_system().to_string_lossy()
+            );
+
+            // On Windows, mount_point.file_name() returns None for root paths
+            // like "E:\" — use the full path string instead for name matching.
+            let mount_str = mount_point.to_string_lossy().to_lowercase();
             let is_kindle_named = disk_name.to_lowercase().contains("kindle")
-                || mount_point
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_lowercase().contains("kindle"))
-                    .unwrap_or(false);
+                || mount_str.contains("kindle");
 
             if is_kindle_named || Self::has_kindle_signatures(mount_point) {
+                log::info!(
+                    "Kindle candidate found via disk scan: name='{}', mount='{}'",
+                    disk_name,
+                    mount_point.display()
+                );
                 if let Some(info) = Self::inspect_kindle_directory(
                     mount_point,
                     &format!("Kindle ({})", disk_name),
@@ -74,8 +86,40 @@ impl DeviceDetector {
                     let is_amazon = vid == 0x1949;
                     if is_amazon {
                         let is_scribe = pid == 0x9981;
-                        // On Windows, devices not mounted as drive letters are handled via MTP (Windows Portable Devices)
-                        let is_mtp = is_scribe || cfg!(target_os = "windows");
+
+                        // Determine if this is an MTP device:
+                        // - Kindle Scribe is always MTP
+                        // - On Windows, check if the device is already mounted as a
+                        //   UMS drive letter. Only treat as MTP if no Kindle drive is
+                        //   found. The previous code (`cfg!(target_os = "windows")`)
+                        //   unconditionally treated ALL Amazon devices as MTP, causing
+                        //   Kindle Paperwhite/Oasis to be misrouted through the MTP
+                        //   extraction path, resulting in 0 items synced.
+                        let is_mtp = if is_scribe {
+                            true
+                        } else if cfg!(target_os = "windows") {
+                            let disks = Disks::new_with_refreshed_list();
+                            let has_kindle_drive = disks.iter().any(|d| {
+                                let name = d.name().to_string_lossy().to_lowercase();
+                                name.contains("kindle")
+                                    || Self::has_kindle_signatures(d.mount_point())
+                            });
+                            if has_kindle_drive {
+                                log::info!(
+                                    "Amazon USB device (PID: 0x{:04x}) found on bus, but a Kindle UMS drive is also mounted — treating as UMS",
+                                    pid
+                                );
+                            } else {
+                                log::info!(
+                                    "Amazon USB device (PID: 0x{:04x}) found on bus with no mounted Kindle drive — treating as MTP",
+                                    pid
+                                );
+                            }
+                            !has_kindle_drive
+                        } else {
+                            false
+                        };
+
                         let dev_title = if is_scribe {
                             "Kindle Scribe (MTP)".to_string()
                         } else if is_mtp {
@@ -100,6 +144,13 @@ impl DeviceDetector {
                         let device_id = serial_str.unwrap_or_else(|| {
                             format!("usb_kindle_{:04x}_{:04x}", vid, pid)
                         });
+
+                        log::info!(
+                            "USB raw detection result: type='{}', mode='{}', id='{}'",
+                            dev_title,
+                            if is_mtp { "MTP" } else { "UMS" },
+                            device_id
+                        );
 
                         return Some(DeviceInfo {
                             device_id,
