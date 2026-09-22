@@ -1,6 +1,6 @@
 [package]
 name = "kindle-glean"
-version = "0.2.0"
+version = "0.2.1"
 description = "Extract highlights, notes, and vocabulary from Kindle to local Markdown"
 authors = ["you"]
 edition = "2021"
