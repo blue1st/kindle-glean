@@ -14,24 +14,17 @@ PACKAGE_JSON="package.json"
 VERSION=$(node -p "require('./$PACKAGE_JSON').version")
 echo "Updating Homebrew Cask to version $VERSION"
 
-# We expect DMGs to be downloaded into current dir or subdirectories
+# We expect DMGs to be downloaded into current dir or subdirectories (Apple Silicon aarch64)
 DMG_ARM=$(find . -name "*_aarch64.dmg" | head -n 1)
-DMG_X64=$(find . -name "*_x64.dmg" -o -name "*_x86_64.dmg" | head -n 1)
 
-if [ -z "$DMG_ARM" ] && [ -z "$DMG_X64" ]; then
-  echo "Error: Could not find any DMG files"
+if [ -z "$DMG_ARM" ]; then
+  echo "Error: Could not find aarch64 DMG file"
   exit 1
 fi
 
-# Fallback if one architecture DMG is not generated
-DMG_ARM=${DMG_ARM:-$DMG_X64}
-DMG_X64=${DMG_X64:-$DMG_ARM}
-
 SHA256_ARM=$(shasum -a 256 "$DMG_ARM" | awk '{print $1}')
-SHA256_X64=$(shasum -a 256 "$DMG_X64" | awk '{print $1}')
 
-echo "ARM SHA256: $SHA256_ARM"
-echo "X64 SHA256: $SHA256_X64"
+echo "Apple Silicon (ARM64) SHA256: $SHA256_ARM"
 
 # Clone the tap repository
 TMP_DIR=$(mktemp -d)
@@ -45,16 +38,15 @@ CASK_FILE="$TMP_DIR/Casks/${CASK_NAME}.rb"
 # Create or update the Cask file
 cat <<EOF > "$CASK_FILE"
 cask "${CASK_NAME}" do
-  arch arm: "aarch64", intel: "x64"
-
   version "${VERSION}"
-  sha256 arm:   "${SHA256_ARM}",
-         intel: "${SHA256_X64}"
+  sha256 "${SHA256_ARM}"
 
-  url "https://github.com/blue1st/kindle-glean/releases/download/v#{version}/Kindle.Glean_#{version}_#{arch}.dmg"
+  url "https://github.com/blue1st/kindle-glean/releases/download/v#{version}/Kindle.Glean_#{version}_aarch64.dmg"
   name "Kindle Glean"
   desc "Extract Kindle highlights, notes, and vocabulary to local Markdown"
   homepage "https://github.com/blue1st/kindle-glean"
+
+  depends_on arch: :arm64
 
   app "Kindle Glean.app"
 
