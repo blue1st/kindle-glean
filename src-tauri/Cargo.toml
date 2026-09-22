@@ -37,4 +37,4 @@ directories = "6.0"
 log = "0.4"
 env_logger = "0.11"
 base64 = "0.22"
-rusb = "0.9.4"
+rusb = { version = "0.9.4", features = ["vendored"] }
