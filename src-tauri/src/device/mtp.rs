@@ -48,7 +48,14 @@ impl MtpClient {
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
-$dest = $args[0]
+$dest = $env:KINDLE_SYNC_DEST
+if ([string]::IsNullOrWhiteSpace($dest) -and $args.Count -gt 0) {
+    $dest = $args[0]
+}
+if ([string]::IsNullOrWhiteSpace($dest)) {
+    Write-Error "同期先ディレクトリパス（KINDLE_SYNC_DEST）が指定されていません。"
+    exit 1
+}
 if (-not (Test-Path $dest)) {
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
 }
@@ -68,7 +75,7 @@ try {
     $pnp = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*VID_1949*" } | Select-Object -First 1
     if ($pnp -and $pnp.FriendlyName) {
         foreach ($item in $pc.Items()) {
-            if ($item.Name -eq $pnp.FriendlyName) {
+            if ($item.Name -eq $pnp.FriendlyName -or $item.Name -like "*$($pnp.FriendlyName)*" -or $pnp.FriendlyName -like "*$($item.Name)*") {
                 $kindle = $item
                 break
             }
@@ -265,8 +272,8 @@ Write-Output "SUCCESS:OK"
             "Bypass",
             "-Command",
             ps_script,
-            &cache_path.to_string_lossy(),
         ]);
+        cmd.env("KINDLE_SYNC_DEST", cache_path);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
