@@ -130,17 +130,20 @@ if (-not $hasDirectContent) {
     }
 }
 
+$copiedCount = 0
+
 function Copy-ShellItem($srcItem, $targetLocalDir, $expectedName) {
     if (-not (Test-Path $targetLocalDir)) {
         New-Item -ItemType Directory -Path $targetLocalDir -Force | Out-Null
     }
-    $destFolder = $shell.Namespace($targetLocalDir)
+    $resolvedDir = (Resolve-Path $targetLocalDir).Path
+    $destFolder = $shell.Namespace($resolvedDir)
     if ($destFolder -eq $null) {
         return $false
     }
     $destFolder.CopyHere($srcItem, 1556)
 
-    $destFilePath = Join-Path $targetLocalDir $expectedName
+    $destFilePath = Join-Path $resolvedDir $expectedName
     $timeout = [DateTime]::Now.AddSeconds(20)
     while (-not (Test-Path $destFilePath) -and [DateTime]::Now -lt $timeout) {
         Start-Sleep -Milliseconds 200
@@ -180,6 +183,7 @@ if ($docFolderItem -ne $null) {
         if ($f.Name.ToLower() -eq "my clippings.txt") {
             if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
                 $clippingsCopied = $true
+                $copiedCount++
             }
             break
         }
@@ -191,6 +195,7 @@ if (-not $clippingsCopied) {
         if ($f.Name.ToLower() -eq "my clippings.txt") {
             if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
                 $clippingsCopied = $true
+                $copiedCount++
             }
             break
         }
@@ -220,7 +225,9 @@ if ($sysFolderItem -ne $null) {
     $searchIn = if ($vFolderItem -ne $null) { $vFolderItem } else { $sysFolderItem }
     foreach ($f in $searchIn.Items()) {
         if ($f.Name.ToLower() -eq "vocab.db") {
-            Copy-ShellItem $f $vocabDest "vocab.db" | Out-Null
+            if (Copy-ShellItem $f $vocabDest "vocab.db") {
+                $copiedCount++
+            }
             break
         }
     }
@@ -252,12 +259,19 @@ if ($nbFolderItem -ne $null) {
             } else {
                 $iname = $item.Name.ToLower()
                 if ($iname.EndsWith(".nbk") -or $iname.EndsWith(".png") -or $iname.EndsWith(".jpg")) {
-                    Copy-ShellItem $item $destLocalPath $item.Name | Out-Null
+                    if (Copy-ShellItem $item $destLocalPath $item.Name) {
+                        $global:copiedCount++
+                    }
                 }
             }
         }
     }
     Copy-NotebookFolder $nbFolderItem.GetFolder $nbDest
+}
+
+if ($copiedCount -eq 0) {
+    Write-Error "Kindle端末からデータを取得できませんでした（0件）。端末の画面ロックを解除してファイルアクセスを許可しているか確認してください。通常のKindle（Paperwhite等）の場合はドライブレター接続またはフォルダ選択同期をご利用ください。"
+    exit 1
 }
 
 Write-Output "PROGRESS:transfer_complete:端末からのデータ取得が完了しました:90:"
@@ -266,6 +280,7 @@ Write-Output "SUCCESS:OK"
 
         let mut cmd = std::process::Command::new("powershell");
         cmd.args([
+            "-Sta",
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",

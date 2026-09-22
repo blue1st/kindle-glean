@@ -8,6 +8,14 @@ impl DeviceDetector {
     /// Detects connected Kindle devices either via USB Mass Storage (UMS) mounts
     /// or direct USB / MTP bus enumeration (for Kindle Scribe, etc.).
     pub fn detect_device() -> Option<DeviceInfo> {
+        // 0. On Windows, directly scan drive letters (D:\ to Z:\) first for maximum speed & reliability
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(win_info) = Self::scan_windows_drives() {
+                return Some(win_info);
+            }
+        }
+
         // 1. First, scan all mounted disks via sysinfo (Windows drive letters, macOS /Volumes, Linux /media)
         let disks = Disks::new_with_refreshed_list();
         for disk in &disks {
@@ -87,38 +95,23 @@ impl DeviceDetector {
                     if is_amazon {
                         let is_scribe = pid == 0x9981;
 
-                        // Determine if this is an MTP device:
-                        // - Kindle Scribe is always MTP
-                        // - On Windows, check if the device is already mounted as a
-                        //   UMS drive letter. Only treat as MTP if no Kindle drive is
-                        //   found. The previous code (`cfg!(target_os = "windows")`)
-                        //   unconditionally treated ALL Amazon devices as MTP, causing
-                        //   Kindle Paperwhite/Oasis to be misrouted through the MTP
-                        //   extraction path, resulting in 0 items synced.
-                        let is_mtp = if is_scribe {
-                            true
-                        } else if cfg!(target_os = "windows") {
-                            let disks = Disks::new_with_refreshed_list();
-                            let has_kindle_drive = disks.iter().any(|d| {
-                                let name = d.name().to_string_lossy().to_lowercase();
-                                name.contains("kindle")
-                                    || Self::has_kindle_signatures(d.mount_point())
-                            });
-                            if has_kindle_drive {
+                        // On Windows, if this is not a Scribe, it's a standard Kindle (Paperwhite, Oasis, Basic).
+                        // Standard Kindles mount as USB Mass Storage (UMS) drive letters (e.g. "D:\", "E:\").
+                        // Scan Windows drive letters directly to see if it is mounted.
+                        #[cfg(target_os = "windows")]
+                        if !is_scribe {
+                            if let Some(drive_info) = Self::scan_windows_drives() {
                                 log::info!(
-                                    "Amazon USB device (PID: 0x{:04x}) found on bus, but a Kindle UMS drive is also mounted — treating as UMS",
-                                    pid
+                                    "Amazon USB device (PID: 0x{:04x}) mapped to Windows UMS drive: {}",
+                                    pid, drive_info.mount_path
                                 );
-                            } else {
-                                log::info!(
-                                    "Amazon USB device (PID: 0x{:04x}) found on bus with no mounted Kindle drive — treating as MTP",
-                                    pid
-                                );
+                                return Some(drive_info);
                             }
-                            !has_kindle_drive
-                        } else {
-                            false
-                        };
+                        }
+
+                        // Kindle Scribe is always MTP.
+                        // Standard Kindle Paperwhite / Oasis are NEVER MTP devices.
+                        let is_mtp = is_scribe;
 
                         let dev_title = if is_scribe {
                             "Kindle Scribe (MTP)".to_string()
@@ -168,7 +161,7 @@ impl DeviceDetector {
                             status_message: if is_mtp {
                                 Some("MTP接続中 (画面のロックを解除してファイルアクセスを許可してください)".to_string())
                             } else {
-                                Some("USB接続中 (端末ロックを解除してファイル転送モードを有効にしてください)".to_string())
+                                Some("USB接続中 (画面ロックを解除してドライブを認識させるか、「フォルダ選択同期」からKindleドライブを選択してください)".to_string())
                             },
                             is_registered: false,
                             nickname: None,
@@ -219,13 +212,38 @@ impl DeviceDetector {
         None
     }
 
+    /// Directly scan Windows drive letters (D:\ to Z:\, then C:\) for mounted Kindle devices.
+    pub fn scan_windows_drives() -> Option<DeviceInfo> {
+        #[cfg(target_os = "windows")]
+        {
+            // First check common removable letters (D to Z), then C as fallback
+            let drive_letters: Vec<char> = ('D'..='Z').chain(std::iter::once('C')).collect();
+            for dl in drive_letters {
+                let drive_root = format!("{}:\\", dl);
+                let p = Path::new(&drive_root);
+                if p.exists() && Self::has_kindle_signatures(p) {
+                    log::info!("Kindle UMS drive found via direct Windows drive scan: {}", drive_root);
+                    if let Some(info) = Self::inspect_kindle_directory(
+                        p,
+                        &format!("Kindle ({}:)", dl),
+                        "UMS",
+                    ) {
+                        return Some(info);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Check if directory contains Kindle signatures (documents/My Clippings.txt or system/vocabulary/vocab.db)
     pub fn has_kindle_signatures<P: AsRef<Path>>(path: P) -> bool {
         let p = path.as_ref();
         p.join("documents").join("My Clippings.txt").exists()
+            || p.join("My Clippings.txt").exists()
             || p.join("system").join("vocabulary").join("vocab.db").exists()
             || p.join(".notebooks").exists()
-            || p.join("documents").exists()
+            || p.join("documents").is_dir()
     }
 
     pub fn inspect_kindle_directory<P: AsRef<Path>>(

@@ -145,7 +145,21 @@ fn sync_now(
             Ok(_) => cache_dir.to_string_lossy().to_string(),
             Err(e) => {
                 log::warn!("MTP pull failed in sync_now: {}. Attempting UMS fallback.", e);
-                // Fallback: if mount path is a real filesystem path, try UMS sync
+                #[cfg(target_os = "windows")]
+                if let Some(drive_info) = device::DeviceDetector::scan_windows_drives() {
+                    log::info!("Falling back to detected Windows UMS drive: {}", drive_info.mount_path);
+                    drive_info.mount_path
+                } else if !path.starts_with("mtp://") && !path.starts_with("usb://") && std::path::Path::new(&path).exists() {
+                    log::info!("Falling back to UMS mount path for sync: {}", path);
+                    path.clone()
+                } else {
+                    return Err(format!(
+                        "MTP同期エラー: {}. Kindle端末の画面ロック解除とUSB接続を確認してください。",
+                        e
+                    ));
+                }
+
+                #[cfg(not(target_os = "windows"))]
                 if !path.starts_with("mtp://") && !path.starts_with("usb://") && std::path::Path::new(&path).exists() {
                     log::info!("Falling back to UMS mount path for sync: {}", path);
                     path.clone()
@@ -164,7 +178,22 @@ fn sync_now(
             percentage: 20,
             current_item: None,
         });
-        path.clone()
+
+        #[allow(unused_mut)]
+        let mut resolved_path = path.clone();
+        if resolved_path.starts_with("usb://") || resolved_path.starts_with("mtp://") {
+            #[cfg(target_os = "windows")]
+            if let Some(drive_info) = device::DeviceDetector::scan_windows_drives() {
+                log::info!("Resolved virtual path '{}' to Windows drive '{}'", resolved_path, drive_info.mount_path);
+                resolved_path = drive_info.mount_path;
+            }
+        }
+
+        if !std::path::Path::new(&resolved_path).exists() {
+            return Err("KindleがPCのドライブとしてマウントされていません。端末の画面ロックを解除してファイル転送を許可するか、「フォルダ選択同期」からKindleのドライブを選択してください。".to_string());
+        }
+
+        resolved_path
     };
 
     let result = state.orchestrator.sync_from_path(&actual_sync_path, &effective_config, &device_name, Some(&progress_cb))?;
@@ -568,19 +597,47 @@ fn start_device_watcher(app_handle: AppHandle, db: Arc<Database>, sync_lock: Arc
                                     Ok(_) => Some(cache_dir.to_string_lossy().to_string()),
                                     Err(e) => {
                                         log::warn!("MTP pull failed: {}. Checking if UMS mount path is available as fallback.", e);
-                                        // Fallback: if mount_path is a real filesystem path (not mtp:// or usb://),
-                                        // try syncing from it directly (the device may actually be UMS-mounted)
-                                        let mp = &device.mount_path;
-                                        if !mp.starts_with("mtp://") && !mp.starts_with("usb://") && std::path::Path::new(mp).exists() {
-                                            log::info!("Falling back to UMS mount path: {}", mp);
-                                            Some(mp.clone())
+                                        #[cfg(target_os = "windows")]
+                                        if let Some(drive_info) = device::DeviceDetector::scan_windows_drives() {
+                                            log::info!("Falling back to detected Windows UMS drive: {}", drive_info.mount_path);
+                                            Some(drive_info.mount_path)
                                         } else {
-                                            None
+                                            let mp = &device.mount_path;
+                                            if !mp.starts_with("mtp://") && !mp.starts_with("usb://") && std::path::Path::new(mp).exists() {
+                                                log::info!("Falling back to UMS mount path: {}", mp);
+                                                Some(mp.clone())
+                                            } else {
+                                                None
+                                            }
+                                        }
+
+                                        #[cfg(not(target_os = "windows"))]
+                                        {
+                                            let mp = &device.mount_path;
+                                            if !mp.starts_with("mtp://") && !mp.starts_with("usb://") && std::path::Path::new(mp).exists() {
+                                                log::info!("Falling back to UMS mount path: {}", mp);
+                                                Some(mp.clone())
+                                            } else {
+                                                None
+                                            }
                                         }
                                     }
                                 }
                             } else {
-                                Some(device.mount_path.clone())
+                                #[allow(unused_mut)]
+                                let mut mp = device.mount_path.clone();
+                                if mp.starts_with("usb://") || mp.starts_with("mtp://") {
+                                    #[cfg(target_os = "windows")]
+                                    if let Some(drive_info) = device::DeviceDetector::scan_windows_drives() {
+                                        log::info!("Resolved virtual path '{}' to Windows drive '{}'", mp, drive_info.mount_path);
+                                        mp = drive_info.mount_path;
+                                    }
+                                }
+                                if std::path::Path::new(&mp).exists() {
+                                    Some(mp)
+                                } else {
+                                    None
+                                }
                             };
 
                             let dev_display = device.nickname.as_deref().unwrap_or(&device.device_type);

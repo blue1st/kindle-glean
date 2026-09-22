@@ -73,10 +73,15 @@ pub struct SyncConfig {
 
 impl Default for SyncConfig {
     fn default() -> Self {
-        let home = directories::UserDirs::new()
-            .map(|u| u.home_dir().to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let default_dir = home.join("Documents").join("KindleGlean");
+        let default_dir = if let Some(user_dirs) = directories::UserDirs::new() {
+            if let Some(doc_dir) = user_dirs.document_dir() {
+                doc_dir.join("KindleGlean")
+            } else {
+                user_dirs.home_dir().join("Documents").join("KindleGlean")
+            }
+        } else {
+            std::path::PathBuf::from("KindleGlean")
+        };
 
         Self {
             vault_path: default_dir.to_string_lossy().to_string(),
@@ -92,14 +97,17 @@ impl Default for SyncConfig {
 
 pub fn resolve_path(path: &str) -> std::path::PathBuf {
     let trimmed = path.trim();
-    if trimmed.starts_with("~/") || trimmed == "~" {
+    if trimmed.is_empty() {
+        return SyncConfig::default().vault_path.into();
+    }
+    if trimmed == "~" {
+        if let Some(user_dirs) = directories::UserDirs::new() {
+            return user_dirs.home_dir().to_path_buf();
+        }
+    } else if trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
         if let Some(user_dirs) = directories::UserDirs::new() {
             let home = user_dirs.home_dir();
-            if trimmed == "~" {
-                return home.to_path_buf();
-            } else {
-                return home.join(&trimmed[2..]);
-            }
+            return home.join(&trimmed[2..]);
         }
     }
     std::path::PathBuf::from(trimmed)
@@ -175,5 +183,29 @@ pub struct SyncedCounts {
     pub notes: usize,
     pub vocab: usize,
     pub notebooks: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sync_config_default_uses_document_dir() {
+        let config = SyncConfig::default();
+        assert!(!config.vault_path.is_empty());
+        assert!(config.vault_path.contains("KindleGlean"));
+    }
+
+    #[test]
+    fn test_resolve_path_expansion() {
+        let home = directories::UserDirs::new()
+            .map(|u| u.home_dir().to_path_buf())
+            .unwrap();
+
+        assert_eq!(resolve_path("~"), home);
+        assert_eq!(resolve_path("~/KindleGlean"), home.join("KindleGlean"));
+        assert_eq!(resolve_path("~\\KindleGlean"), home.join("KindleGlean"));
+        assert_eq!(resolve_path("/tmp/vault"), std::path::PathBuf::from("/tmp/vault"));
+    }
 }
 
