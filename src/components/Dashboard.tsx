@@ -14,7 +14,9 @@ import {
   Settings2,
   ChevronRight,
   Folder,
+  FolderOpen,
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { syncNow, onSyncProgress, getDeviceProfile } from "../api";
 import { DeviceSetupModal } from "./DeviceSetupModal";
 
@@ -101,6 +103,22 @@ export const Dashboard: React.FC<Props> = ({
       setTimeout(() => {
         setProgress(null);
       }, 3000);
+    }
+  };
+
+  const handleSelectFolderAndSync = async () => {
+    if (isSyncingRef.current) return;
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Kindle端末または同期対象フォルダを選択",
+      });
+      if (selected && typeof selected === "string") {
+        await handleSyncNow(selected);
+      }
+    } catch (err) {
+      console.error("Folder selection failed:", err);
     }
   };
 
@@ -261,7 +279,17 @@ export const Dashboard: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <button
+              disabled={syncing}
+              onClick={handleSelectFolderAndSync}
+              title="PC上のKindleドライブや特定のフォルダを手動で選択して同期"
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700/60 transition-all active:scale-95 shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FolderOpen className="w-4 h-4 text-zinc-400" />
+              <span>フォルダ選択同期</span>
+            </button>
+
             <button
               disabled={syncing || !device?.connected}
               onClick={() => handleSyncNow()}
@@ -269,7 +297,7 @@ export const Dashboard: React.FC<Props> = ({
                 syncing
                   ? "bg-indigo-700/80 text-white/90 cursor-wait pointer-events-none opacity-90 ring-2 ring-indigo-400/30"
                   : device?.connected
-                  ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20 active:scale-95"
+                  ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20 active:scale-95 cursor-pointer"
                   : "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700/30"
               }`}
             >
@@ -323,18 +351,33 @@ export const Dashboard: React.FC<Props> = ({
         {/* Message Banner */}
         {syncMessage && (
           <div
-            className={`mt-4 p-3 rounded-xl flex items-center gap-2 text-sm ${
+            className={`mt-4 p-3.5 rounded-xl text-sm ${
               syncMessage.isError
                 ? "bg-rose-500/10 border border-rose-500/30 text-rose-300"
                 : "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300"
             }`}
           >
-            {syncMessage.isError ? (
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+            <div className="flex items-center gap-2">
+              {syncMessage.isError ? (
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+              )}
+              <span>{syncMessage.text}</span>
+            </div>
+            {syncMessage.isError && (
+              <div className="mt-2 pl-6 text-xs text-rose-400/80 flex flex-wrap items-center gap-2">
+                <span>※端末のロック解除を確認するか、「フォルダ選択同期」からKindleのドライブやフォルダを直接指定して同期してください。</span>
+                <button
+                  type="button"
+                  onClick={handleSelectFolderAndSync}
+                  className="underline text-indigo-300 hover:text-indigo-200 cursor-pointer font-medium inline-flex items-center gap-1"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  フォルダを手動選択
+                </button>
+              </div>
             )}
-            <span>{syncMessage.text}</span>
           </div>
         )}
       </div>

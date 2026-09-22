@@ -17,10 +17,336 @@ impl MtpClient {
         let cache_path = cache_dir.as_ref().to_path_buf();
         fs::create_dir_all(&cache_path).map_err(|e| e.to_string())?;
 
+        #[cfg(target_os = "windows")]
+        {
+            return Self::pull_scribe_files_windows(&cache_path, on_progress);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Self::pull_scribe_files_usb(&cache_path, on_progress)
+        }
+    }
+
+    /// Windows native MTP extraction using Windows Shell COM (Shell.Application)
+    /// This avoids USB interface locking conflicts with the Windows WPD driver.
+    pub fn pull_scribe_files_windows(
+        cache_path: &Path,
+        on_progress: Option<&dyn Fn(crate::models::SyncProgress)>,
+    ) -> Result<PathBuf, String> {
         if let Some(cb) = on_progress {
             cb(crate::models::SyncProgress {
                 step: "connecting".to_string(),
-                message: "Kindle Scribe に接続中 (MTPセッション確立)...".to_string(),
+                message: "Kindle に接続中 (Windows MTP)...".to_string(),
+                percentage: 10,
+                current_item: None,
+            });
+        }
+
+        let ps_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+
+$dest = $args[0]
+if (-not (Test-Path $dest)) {
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+}
+
+Write-Output "PROGRESS:connecting:Kindle端末を検索中 (Windows Shell)...:15:"
+
+$shell = New-Object -ComObject Shell.Application
+$pc = $shell.Namespace(17)
+if ($pc -eq $null) {
+    Write-Error "Windows Shell (This PC) を開けませんでした。"
+    exit 1
+}
+
+$kindle = $null
+
+try {
+    $pnp = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*VID_1949*" } | Select-Object -First 1
+    if ($pnp -and $pnp.FriendlyName) {
+        foreach ($item in $pc.Items()) {
+            if ($item.Name -eq $pnp.FriendlyName) {
+                $kindle = $item
+                break
+            }
+        }
+    }
+} catch {}
+
+if ($kindle -eq $null) {
+    foreach ($item in $pc.Items()) {
+        if ($item.Name -like "*Kindle*" -or $item.Type -like "*Kindle*") {
+            $kindle = $item
+            break
+        }
+    }
+}
+
+if ($kindle -eq $null) {
+    Write-Error "Kindle端末が見つかりませんでした。エクスプローラーの「PC」配下にKindleが表示されているか、画面ロックが解除されているか確認してください。"
+    exit 1
+}
+
+Write-Output "PROGRESS:scanning:Kindleストレージをスキャン中...:25:"
+
+$kindleFolder = $kindle.GetFolder
+$targetRoot = $kindleFolder
+
+$subItems = @($kindleFolder.Items())
+$hasDirectContent = $false
+foreach ($it in $subItems) {
+    $lname = $it.Name.ToLower()
+    if ($lname -eq "documents" -or $lname -eq ".notebooks" -or $lname -eq "notebooks" -or $lname -eq "my clippings.txt") {
+        $hasDirectContent = $true
+        break
+    }
+}
+
+if (-not $hasDirectContent) {
+    foreach ($it in $subItems) {
+        if ($it.IsFolder) {
+            $lname = $it.Name.ToLower()
+            if ($lname -like "*internal*" -or $lname -like "*storage*" -or $lname -like "*ストレージ*") {
+                $targetRoot = $it.GetFolder
+                break
+            }
+        }
+    }
+    if ($targetRoot -eq $kindleFolder) {
+        $folders = @($subItems | Where-Object { $_.IsFolder })
+        if ($folders.Count -eq 1) {
+            $targetRoot = $folders[0].GetFolder
+        }
+    }
+}
+
+function Copy-ShellItem($srcItem, $targetLocalDir, $expectedName) {
+    if (-not (Test-Path $targetLocalDir)) {
+        New-Item -ItemType Directory -Path $targetLocalDir -Force | Out-Null
+    }
+    $destFolder = $shell.Namespace($targetLocalDir)
+    if ($destFolder -eq $null) {
+        return $false
+    }
+    $destFolder.CopyHere($srcItem, 1556)
+
+    $destFilePath = Join-Path $targetLocalDir $expectedName
+    $timeout = [DateTime]::Now.AddSeconds(20)
+    while (-not (Test-Path $destFilePath) -and [DateTime]::Now -lt $timeout) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (Test-Path $destFilePath) {
+        $prevSize = -1
+        while ([DateTime]::Now -lt $timeout) {
+            try {
+                $curSize = (Get-Item $destFilePath).Length
+                if ($curSize -eq $prevSize -and $curSize -ge 0) {
+                    break
+                }
+                $prevSize = $curSize
+            } catch {}
+            Start-Sleep -Milliseconds 250
+        }
+        return $true
+    }
+    return $false
+}
+
+# 1. My Clippings.txt
+Write-Output "PROGRESS:clippings:My Clippings.txt を取得中...:40:My Clippings.txt"
+$docsDest = Join-Path $dest "documents"
+$clippingsCopied = $false
+
+$docFolderItem = $null
+foreach ($it in $targetRoot.Items()) {
+    if ($it.IsFolder -and $it.Name.ToLower() -eq "documents") {
+        $docFolderItem = $it.GetFolder
+        break
+    }
+}
+
+if ($docFolderItem -ne $null) {
+    foreach ($f in $docFolderItem.Items()) {
+        if ($f.Name.ToLower() -eq "my clippings.txt") {
+            if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
+                $clippingsCopied = $true
+            }
+            break
+        }
+    }
+}
+
+if (-not $clippingsCopied) {
+    foreach ($f in $targetRoot.Items()) {
+        if ($f.Name.ToLower() -eq "my clippings.txt") {
+            if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
+                $clippingsCopied = $true
+            }
+            break
+        }
+    }
+}
+
+# 2. vocab.db
+Write-Output "PROGRESS:vocab:vocab.db を取得中...:60:vocab.db"
+$vocabDest = Join-Path (Join-Path $dest "system") "vocabulary"
+
+$sysFolderItem = $null
+foreach ($it in $targetRoot.Items()) {
+    if ($it.IsFolder -and $it.Name.ToLower() -eq "system") {
+        $sysFolderItem = $it.GetFolder
+        break
+    }
+}
+
+if ($sysFolderItem -ne $null) {
+    $vFolderItem = $null
+    foreach ($it in $sysFolderItem.Items()) {
+        if ($it.IsFolder -and $it.Name.ToLower() -eq "vocabulary") {
+            $vFolderItem = $it.GetFolder
+            break
+        }
+    }
+    $searchIn = if ($vFolderItem -ne $null) { $vFolderItem } else { $sysFolderItem }
+    foreach ($f in $searchIn.Items()) {
+        if ($f.Name.ToLower() -eq "vocab.db") {
+            Copy-ShellItem $f $vocabDest "vocab.db" | Out-Null
+            break
+        }
+    }
+}
+
+# 3. Notebooks (.notebooks or notebooks)
+Write-Output "PROGRESS:notebooks:Scribe手書きノートを取得中...:80:notebooks"
+$nbFolderItem = $null
+foreach ($it in $targetRoot.Items()) {
+    $lname = $it.Name.ToLower()
+    if ($it.IsFolder -and ($lname -eq ".notebooks" -or $lname -eq "notebooks")) {
+        $nbFolderItem = $it
+        break
+    }
+}
+
+if ($nbFolderItem -ne $null) {
+    $nbDest = Join-Path $dest ".notebooks"
+    if (-not (Test-Path $nbDest)) {
+        New-Item -ItemType Directory -Path $nbDest -Force | Out-Null
+    }
+    function Copy-NotebookFolder($srcShellFolder, $destLocalPath) {
+        if (-not (Test-Path $destLocalPath)) {
+            New-Item -ItemType Directory -Path $destLocalPath -Force | Out-Null
+        }
+        foreach ($item in $srcShellFolder.Items()) {
+            if ($item.IsFolder) {
+                Copy-NotebookFolder $item.GetFolder (Join-Path $destLocalPath $item.Name)
+            } else {
+                $iname = $item.Name.ToLower()
+                if ($iname.EndsWith(".nbk") -or $iname.EndsWith(".png") -or $iname.EndsWith(".jpg")) {
+                    Copy-ShellItem $item $destLocalPath $item.Name | Out-Null
+                }
+            }
+        }
+    }
+    Copy-NotebookFolder $nbFolderItem.GetFolder $nbDest
+}
+
+Write-Output "PROGRESS:transfer_complete:端末からのデータ取得が完了しました:90:"
+Write-Output "SUCCESS:OK"
+"#;
+
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ps_script,
+            &cache_path.to_string_lossy(),
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            format!("PowerShell の起動に失敗しました: {}", e)
+        })?;
+
+        let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+        let reader = std::io::BufReader::new(stdout);
+        use std::io::BufRead;
+
+        let mut last_error = String::new();
+        for line_res in reader.lines() {
+            if let Ok(line) = line_res {
+                let line_str = line.trim();
+                if line_str.starts_with("PROGRESS:") {
+                    let parts: Vec<&str> = line_str.splitn(5, ':').collect();
+                    if parts.len() >= 4 {
+                        let step = parts[1].to_string();
+                        let msg = parts[2].to_string();
+                        let pct = parts[3].parse::<u32>().unwrap_or(50);
+                        let item = if parts.len() >= 5 && !parts[4].is_empty() {
+                            Some(parts[4].to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(cb) = on_progress {
+                            cb(crate::models::SyncProgress {
+                                step,
+                                message: msg,
+                                percentage: pct,
+                                current_item: item,
+                            });
+                        }
+                    }
+                } else if line_str.starts_with("ERROR:") {
+                    last_error = line_str.to_string();
+                }
+            }
+        }
+
+        let status = child.wait().map_err(|e| format!("PowerShell 終了待ちエラー: {}", e))?;
+        if !status.success() {
+            let mut stderr_msg = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut stderr_msg);
+            }
+            let err_detail = if !stderr_msg.trim().is_empty() {
+                stderr_msg.trim().to_string()
+            } else if !last_error.is_empty() {
+                last_error
+            } else {
+                format!("Exit code: {:?}", status.code())
+            };
+            return Err(format!(
+                "Windows MTP同期エラー: {}. 端末の画面ロックを解除し、エクスプローラーの「PC」にKindleが表示されていることを確認してください。",
+                err_detail
+            ));
+        }
+
+        Ok(cache_path.to_path_buf())
+    }
+
+    /// Pulls Kindle files from Scribe via direct USB / rusb MTP (macOS / Linux)
+    pub fn pull_scribe_files_usb(
+        cache_path: &Path,
+        on_progress: Option<&dyn Fn(crate::models::SyncProgress)>,
+    ) -> Result<PathBuf, String> {
+        if let Some(cb) = on_progress {
+            cb(crate::models::SyncProgress {
+                step: "connecting".to_string(),
+                message: "Kindle に接続中 (MTPセッション確立)...".to_string(),
                 percentage: 10,
                 current_item: None,
             });
@@ -39,10 +365,10 @@ impl MtpClient {
             }
         }
 
-        let dev = scribe_dev.ok_or_else(|| "Kindle Scribe がUSB接続されていません".to_string())?;
+        let dev = scribe_dev.ok_or_else(|| "Kindle がUSB接続されていません".to_string())?;
         let mut handle = dev.open().map_err(|e| {
             format!(
-                "Kindle Scribe を開けませんでした: {}. ロックを解除して再試行してください。",
+                "Kindle を開けませんでした: {}. ロックを解除して再試行してください。",
                 e
             )
         })?;
@@ -73,10 +399,10 @@ impl MtpClient {
             ));
         }
 
-        let result = Self::do_pull(&mut handle, &cache_path, on_progress);
+        let result = Self::do_pull(&mut handle, cache_path, on_progress);
         handle.release_interface(0).ok();
 
-        result.map(|_| cache_path)
+        result.map(|_| cache_path.to_path_buf())
     }
 
     fn do_pull(

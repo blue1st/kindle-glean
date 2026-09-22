@@ -8,35 +8,7 @@ impl DeviceDetector {
     /// Detects connected Kindle devices either via USB Mass Storage (UMS) mounts
     /// or direct USB / MTP bus enumeration (for Kindle Scribe, etc.).
     pub fn detect_device() -> Option<DeviceInfo> {
-        // 1. First, check USB bus directly via rusb (Catches MTP devices like Kindle Scribe even without disk mounts!)
-        if let Some(usb_info) = Self::detect_usb_raw() {
-            return Some(usb_info);
-        }
-
-        // 2. Check macOS ioreg as fallback for USB enumeration
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(ioreg_info) = Self::detect_macos_ioreg() {
-                return Some(ioreg_info);
-            }
-        }
-
-        // 3. Check known macOS Kindle mount path (/Volumes/Kindle)
-        #[cfg(target_os = "macos")]
-        {
-            let default_macos_kindle = PathBuf::from("/Volumes/Kindle");
-            if default_macos_kindle.exists() {
-                if let Some(info) = Self::inspect_kindle_directory(
-                    &default_macos_kindle,
-                    "Kindle Paperwhite / Oasis (UMS)",
-                    "UMS",
-                ) {
-                    return Some(info);
-                }
-            }
-        }
-
-        // 4. Scan all mounted disks via sysinfo (macOS, Windows, Linux)
+        // 1. First, scan all mounted disks via sysinfo (Windows drive letters, macOS /Volumes, Linux /media)
         let disks = Disks::new_with_refreshed_list();
         for disk in &disks {
             let mount_point = disk.mount_point();
@@ -59,6 +31,34 @@ impl DeviceDetector {
             }
         }
 
+        // 2. Check known macOS Kindle mount path (/Volumes/Kindle)
+        #[cfg(target_os = "macos")]
+        {
+            let default_macos_kindle = PathBuf::from("/Volumes/Kindle");
+            if default_macos_kindle.exists() {
+                if let Some(info) = Self::inspect_kindle_directory(
+                    &default_macos_kindle,
+                    "Kindle Paperwhite / Oasis (UMS)",
+                    "UMS",
+                ) {
+                    return Some(info);
+                }
+            }
+        }
+
+        // 3. If no mounted disk was found, check USB bus directly (for MTP devices like Kindle Scribe, 11th/12th Gen)
+        if let Some(usb_info) = Self::detect_usb_raw() {
+            return Some(usb_info);
+        }
+
+        // 4. Check macOS ioreg as fallback for USB enumeration
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ioreg_info) = Self::detect_macos_ioreg() {
+                return Some(ioreg_info);
+            }
+        }
+
         None
     }
 
@@ -74,8 +74,12 @@ impl DeviceDetector {
                     let is_amazon = vid == 0x1949;
                     if is_amazon {
                         let is_scribe = pid == 0x9981;
+                        // On Windows, devices not mounted as drive letters are handled via MTP (Windows Portable Devices)
+                        let is_mtp = is_scribe || cfg!(target_os = "windows");
                         let dev_title = if is_scribe {
                             "Kindle Scribe (MTP)".to_string()
+                        } else if is_mtp {
+                            format!("Kindle (MTP PID: 0x{:04x})", pid)
                         } else {
                             format!("Kindle Device (USB PID: 0x{:04x})", pid)
                         };
@@ -100,16 +104,20 @@ impl DeviceDetector {
                         return Some(DeviceInfo {
                             device_id,
                             device_type: dev_title,
-                            connection_mode: if is_scribe { "MTP".to_string() } else { "UMS".to_string() },
-                            mount_path: format!("usb://0x{:04x}:0x{:04x}", vid, pid),
+                            connection_mode: if is_mtp { "MTP".to_string() } else { "UMS".to_string() },
+                            mount_path: if is_mtp {
+                                format!("mtp://0x{:04x}:0x{:04x}", vid, pid)
+                            } else {
+                                format!("usb://0x{:04x}:0x{:04x}", vid, pid)
+                            },
                             has_clippings: true,
                             has_vocab: true,
                             has_notebooks: is_scribe,
                             connected: true,
-                            status_message: if is_scribe {
+                            status_message: if is_mtp {
                                 Some("MTP接続中 (画面のロックを解除してファイルアクセスを許可してください)".to_string())
                             } else {
-                                None
+                                Some("USB接続中 (端末ロックを解除してファイル転送モードを有効にしてください)".to_string())
                             },
                             is_registered: false,
                             nickname: None,
@@ -258,5 +266,48 @@ impl DeviceDetector {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_has_kindle_signatures() {
+        let temp_dir = std::env::temp_dir().join("test_kindle_sig_detection");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        assert!(!DeviceDetector::has_kindle_signatures(&temp_dir));
+
+        let docs_dir = temp_dir.join("documents");
+        fs::create_dir_all(&docs_dir).unwrap();
+        let clippings_file = docs_dir.join("My Clippings.txt");
+        fs::write(&clippings_file, "Sample clipping").unwrap();
+
+        assert!(DeviceDetector::has_kindle_signatures(&temp_dir));
+
+        let info = DeviceDetector::inspect_kindle_directory(&temp_dir, "Kindle Paperwhite", "UMS").unwrap();
+        assert_eq!(info.connection_mode, "UMS");
+        assert!(info.has_clippings);
+        assert!(!info.has_vocab);
+        assert!(!info.has_notebooks);
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_inspect_scribe_notebooks_detection() {
+        let temp_dir = std::env::temp_dir().join("test_scribe_sig_detection");
+        let nb_dir = temp_dir.join(".notebooks");
+        fs::create_dir_all(&nb_dir).unwrap();
+
+        let info = DeviceDetector::inspect_kindle_directory(&temp_dir, "Kindle Device", "UMS").unwrap();
+        assert_eq!(info.device_type, "Kindle Scribe");
+        assert!(info.has_notebooks);
+
+        fs::remove_dir_all(&temp_dir).ok();
     }
 }
