@@ -18,12 +18,14 @@ echo "Updating Homebrew Cask to version $VERSION"
 DMG_ARM=$(find . -name "*_aarch64.dmg" | head -n 1)
 DMG_X64=$(find . -name "*_x64.dmg" -o -name "*_x86_64.dmg" | head -n 1)
 
-if [ -z "$DMG_ARM" ] || [ -z "$DMG_X64" ]; then
-  echo "Error: Could not find both arm64 and x64 DMG files"
-  echo "ARM: $DMG_ARM"
-  echo "X64: $DMG_X64"
+if [ -z "$DMG_ARM" ] && [ -z "$DMG_X64" ]; then
+  echo "Error: Could not find any DMG files"
   exit 1
 fi
+
+# Fallback if one architecture DMG is not generated
+DMG_ARM=${DMG_ARM:-$DMG_X64}
+DMG_X64=${DMG_X64:-$DMG_ARM}
 
 SHA256_ARM=$(shasum -a 256 "$DMG_ARM" | awk '{print $1}')
 SHA256_X64=$(shasum -a 256 "$DMG_X64" | awk '{print $1}')
