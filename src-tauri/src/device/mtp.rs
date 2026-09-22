@@ -109,170 +109,155 @@ try {
         exit 1
     }
 
-    $copiedCount = 0
-
-    function Copy-ShellItem($srcItem, $targetLocalDir, $expectedName) {
-        if (-not (Test-Path $targetLocalDir)) {
-            New-Item -ItemType Directory -Path $targetLocalDir -Force | Out-Null
-        }
-        $resolvedDir = [System.IO.Path]::GetFullPath($targetLocalDir)
-        $destFolder = $shell.Namespace($resolvedDir)
-        if ($destFolder -eq $null) {
-            Write-Output "DEBUG: Failed to get shell namespace for '$resolvedDir'"
-            return $false
-        }
-
-        try {
-            $destFolder.CopyHere($srcItem, 16)
-        } catch {
-            try {
-                $destFolder.CopyHere($srcItem)
-            } catch {
-                Write-Output "DEBUG: CopyHere failed: $_"
-                return $false
+    # 2. Resolve Storage Root (Handle "Internal storage" / "内部共有ストレージ" wrapper if present)
+    $storageRoot = $kindleFolder
+    foreach ($item in $kindleFolder.Items()) {
+        if ($item.IsFolder) {
+            $lname = $item.Name.ToLower()
+            if ($lname -like "*internal*" -or $lname -like "*storage*" -or $lname -like "*ストレージ*") {
+                $storageRoot = $item.GetFolder
+                break
             }
         }
-
-        $destFilePath = [System.IO.Path]::Combine($resolvedDir, $expectedName)
-        $timeout = [DateTime]::Now.AddSeconds(20)
-        while (-not (Test-Path $destFilePath) -and [DateTime]::Now -lt $timeout) {
-            Start-Sleep -Milliseconds 200
-        }
-        if (Test-Path $destFilePath) {
-            $prevSize = -1
-            while ([DateTime]::Now -lt $timeout) {
-                try {
-                    $curSize = (Get-Item $destFilePath).Length
-                    if ($curSize -eq $prevSize -and $curSize -ge 0) {
-                        break
-                    }
-                    $prevSize = $curSize
-                } catch {}
-                Start-Sleep -Milliseconds 200
-            }
-            Write-Output "DEBUG: Copied $expectedName ($curSize bytes)"
-            return $true
-        }
-        Write-Output "DEBUG: Timeout waiting for $expectedName"
-        return $false
     }
 
-    function Find-Folder-ByName($parentFolder, $targetName, $maxDepth = 3) {
-        if ($parentFolder -eq $null -or $maxDepth -le 0) { return $null }
-        try {
-            foreach ($item in $parentFolder.Items()) {
-                if ($item.IsFolder) {
-                    if ($item.Name.ToLower() -eq $targetName.ToLower()) {
-                        $f = $item.GetFolder
-                        if ($f -ne $null) { return $f }
-                    }
-                    $subF = $item.GetFolder
-                    if ($subF -ne $null) {
-                        $found = Find-Folder-ByName $subF $targetName ($maxDepth - 1)
-                        if ($found -ne $null) { return $found }
-                    }
-                }
-            }
-        } catch {}
-        return $null
+    Write-Output "DEBUG: Storage root resolved"
+
+    $resolvedDest = [System.IO.Path]::GetFullPath($dest)
+    $destShell = $shell.Namespace($resolvedDest)
+    if ($destShell -eq $null) {
+        Write-Output "ERROR:キャッシュフォルダのNamespace取得に失敗しました: $resolvedDest"
+        exit 1
     }
 
-    # 1. My Clippings.txt
-    Write-Output "PROGRESS:clippings:My Clippings.txt を取得中...:40:My Clippings.txt"
-    $docsDest = [System.IO.Path]::Combine($dest, "documents")
-    $clippingsCopied = $false
+    # 3. Locate Target Folders in Storage Root
+    $docItem = $null
+    $nbItem = $null
+    $sysItem = $null
 
-    $docFolder = Find-Folder-ByName $kindleFolder "documents" 3
-    if ($docFolder -ne $null) {
-        Write-Output "DEBUG: Found documents folder in Kindle storage"
-        try {
+    foreach ($item in $storageRoot.Items()) {
+        $lname = $item.Name.ToLower()
+        if ($item.IsFolder) {
+            if ($lname -eq "documents") {
+                $docItem = $item
+            } elseif ($lname -eq ".notebooks" -or $lname -eq "notebooks") {
+                $nbItem = $item
+            } elseif ($lname -eq "system") {
+                $sysItem = $item
+            }
+        }
+    }
+
+    # 4. Copy "My Clippings.txt"
+    Write-Output "PROGRESS:clippings:読書メモ・ハイライト (My Clippings.txt) を取得中...:40:My Clippings.txt"
+    $docsDestDir = [System.IO.Path]::Combine($resolvedDest, "documents")
+    if (-not (Test-Path $docsDestDir)) {
+        New-Item -ItemType Directory -Path $docsDestDir -Force | Out-Null
+    }
+    $docsDestShell = $shell.Namespace($docsDestDir)
+
+    if ($docItem -ne $null -and $docsDestShell -ne $null) {
+        $docFolder = $docItem.GetFolder
+        if ($docFolder -ne $null) {
             foreach ($f in $docFolder.Items()) {
                 if ($f.Name.ToLower() -eq "my clippings.txt") {
-                    if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
-                        $clippingsCopied = $true
-                        $copiedCount++
+                    $docsDestShell.CopyHere($f, 16)
+                    $destFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings.txt")
+                    for ($i = 0; $i -lt 30; $i++) {
+                        if (Test-Path $destFile) { break }
+                        Start-Sleep -Milliseconds 200
                     }
                     break
                 }
             }
-        } catch {}
+        }
     }
 
-    # Fallback: check root items for My Clippings.txt
-    if (-not $clippingsCopied) {
-        try {
-            foreach ($f in $kindleFolder.Items()) {
-                if ($f.Name.ToLower() -eq "my clippings.txt") {
-                    if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
-                        $clippingsCopied = $true
-                        $copiedCount++
-                    }
+    # Fallback for My Clippings in storageRoot
+    $destFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings.txt")
+    if (-not (Test-Path $destFile) -and $docsDestShell -ne $null) {
+        foreach ($f in $storageRoot.Items()) {
+            if ($f.Name.ToLower() -eq "my clippings.txt") {
+                $docsDestShell.CopyHere($f, 16)
+                for ($i = 0; $i -lt 30; $i++) {
+                    if (Test-Path $destFile) { break }
+                    Start-Sleep -Milliseconds 200
+                }
+                break
+            }
+        }
+    }
+
+    # 5. Copy "vocab.db"
+    Write-Output "PROGRESS:vocab:単語帳データ (vocab.db) を取得中...:60:vocab.db"
+    $vocabDestDir = [System.IO.Path]::Combine([System.IO.Path]::Combine($resolvedDest, "system"), "vocabulary")
+    if (-not (Test-Path $vocabDestDir)) {
+        New-Item -ItemType Directory -Path $vocabDestDir -Force | Out-Null
+    }
+    $vocabDestShell = $shell.Namespace($vocabDestDir)
+
+    if ($sysItem -ne $null -and $vocabDestShell -ne $null) {
+        $sysFolder = $sysItem.GetFolder
+        if ($sysFolder -ne $null) {
+            $vFolder = $null
+            foreach ($it in $sysFolder.Items()) {
+                if ($it.IsFolder -and $it.Name.ToLower() -eq "vocabulary") {
+                    $vFolder = $it.GetFolder
                     break
                 }
             }
-        } catch {}
-    }
-
-    # 2. vocab.db
-    Write-Output "PROGRESS:vocab:vocab.db を取得中...:60:vocab.db"
-    $vocabDest = [System.IO.Path]::Combine([System.IO.Path]::Combine($dest, "system"), "vocabulary")
-
-    $sysFolder = Find-Folder-ByName $kindleFolder "system" 3
-    if ($sysFolder -ne $null) {
-        $vFolder = Find-Folder-ByName $sysFolder "vocabulary" 2
-        $searchFolder = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
-        try {
-            foreach ($f in $searchFolder.Items()) {
+            $searchF = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
+            foreach ($f in $searchF.Items()) {
                 if ($f.Name.ToLower() -eq "vocab.db") {
-                    if (Copy-ShellItem $f $vocabDest "vocab.db") {
-                        $copiedCount++
+                    $vocabDestShell.CopyHere($f, 16)
+                    $vFile = [System.IO.Path]::Combine($vocabDestDir, "vocab.db")
+                    for ($i = 0; $i -lt 30; $i++) {
+                        if (Test-Path $vFile) { break }
+                        Start-Sleep -Milliseconds 200
                     }
                     break
                 }
             }
-        } catch {}
+        }
     }
 
-    # 3. Notebooks (.notebooks or notebooks)
+    # 6. Copy Notebooks (.notebooks)
     Write-Output "PROGRESS:notebooks:Scribe手書きノートを取得中...:80:notebooks"
-    $nbFolder = Find-Folder-ByName $kindleFolder ".notebooks" 3
-    if ($nbFolder -eq $null) {
-        $nbFolder = Find-Folder-ByName $kindleFolder "notebooks" 3
-    }
-
-    if ($nbFolder -ne $null) {
-        Write-Output "DEBUG: Found notebooks folder in Kindle storage"
-        $nbDest = [System.IO.Path]::Combine($dest, ".notebooks")
-        if (-not (Test-Path $nbDest)) {
-            New-Item -ItemType Directory -Path $nbDest -Force | Out-Null
+    if ($nbItem -ne $null) {
+        $nbLocalDest = [System.IO.Path]::Combine($resolvedDest, ".notebooks")
+        if (-not (Test-Path $nbLocalDest)) {
+            New-Item -ItemType Directory -Path $nbLocalDest -Force | Out-Null
         }
-        function Copy-NotebookFolder($srcShellFolder, $destLocalPath) {
-            if (-not (Test-Path $destLocalPath)) {
-                New-Item -ItemType Directory -Path $destLocalPath -Force | Out-Null
-            }
-            try {
-                foreach ($item in $srcShellFolder.Items()) {
-                    if ($item.IsFolder) {
-                        $subF = $item.GetFolder
-                        if ($subF -ne $null) {
-                            Copy-NotebookFolder $subF ([System.IO.Path]::Combine($destLocalPath, $item.Name))
-                        }
-                    } else {
-                        $iname = $item.Name.ToLower()
-                        if ($iname.EndsWith(".nbk") -or $iname.EndsWith(".png") -or $iname.EndsWith(".jpg")) {
-                            if (Copy-ShellItem $item $destLocalPath $item.Name) {
-                                $global:copiedCount++
-                            }
-                        }
-                    }
+        $nbDestShell = $shell.Namespace($nbLocalDest)
+        if ($nbDestShell -ne $null) {
+            $nbFolder = $nbItem.GetFolder
+            if ($nbFolder -ne $null) {
+                foreach ($nbSub in $nbFolder.Items()) {
+                    $nbDestShell.CopyHere($nbSub, 16)
                 }
-            } catch {}
+                # Wait for items to transfer
+                $deadline = [DateTime]::Now.AddSeconds(30)
+                $prevCount = -1
+                while ([DateTime]::Now -lt $deadline) {
+                    Start-Sleep -Milliseconds 500
+                    $curCount = @(Get-ChildItem $nbLocalDest -Recurse -ErrorAction SilentlyContinue).Count
+                    if ($curCount -gt 0 -and $curCount -eq $prevCount) {
+                        break
+                    }
+                    $prevCount = $curCount
+                }
+                Write-Output "DEBUG: Notebook files copied: $curCount"
+            }
         }
-        Copy-NotebookFolder $nbFolder $nbDest
     }
 
-    if ($copiedCount -eq 0) {
-        Write-Output "ERROR:Kindle端末からデータを取得できませんでした。Kindle Scribeの画面ロック（パスコード）を解除し、画面を点灯させた状態でUSB接続を確認してください。"
+    # 7. Verify copied results
+    $hasClippings = Test-Path (Join-Path (Join-Path $resolvedDest "documents") "My Clippings.txt")
+    $hasVocab = Test-Path (Join-Path (Join-Path (Join-Path $resolvedDest "system") "vocabulary") "vocab.db")
+    $hasNotebooks = (Test-Path (Join-Path $resolvedDest ".notebooks")) -and ((Get-ChildItem (Join-Path $resolvedDest ".notebooks") -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
+
+    if (-not $hasClippings -and -not $hasVocab -and -not $hasNotebooks) {
+        Write-Output "ERROR:Kindle端末内に同期可能なデータ（My Clippings.txt / 単語帳 / 手書きノート）が見つかりませんでした。USBケーブルの接続を確認し、Windowsエクスプローラーの「PC」配下でKindleのストレージが開けるか確認してください。"
         exit 1
     }
 
