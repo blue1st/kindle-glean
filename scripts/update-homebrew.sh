@@ -50,10 +50,9 @@ cask "${CASK_NAME}" do
 
   app "Kindle Glean.app"
 
-  postflight do
-    system_command "xattr",
-                   args: ["-cr", "#{appdir}/Kindle Glean.app"],
-                   sudo: false
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Kindle Glean.app"]
+    run "/usr/bin/codesign", args: ["--force", "--deep", "--sign", "-", "{{appdir}}/Kindle Glean.app"]
   end
 
   zap trash: [
