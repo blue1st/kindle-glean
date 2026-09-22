@@ -46,234 +46,244 @@ impl MtpClient {
         let ps_script = r#"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-
-$dest = $env:KINDLE_SYNC_DEST
-if ([string]::IsNullOrWhiteSpace($dest) -and $args.Count -gt 0) {
-    $dest = $args[0]
-}
-if ([string]::IsNullOrWhiteSpace($dest)) {
-    Write-Error "同期先ディレクトリパス（KINDLE_SYNC_DEST）が指定されていません。"
-    exit 1
-}
-if (-not (Test-Path $dest)) {
-    New-Item -ItemType Directory -Path $dest -Force | Out-Null
-}
-
-Write-Output "PROGRESS:connecting:Kindle端末を検索中 (Windows Shell)...:15:"
-
-$shell = New-Object -ComObject Shell.Application
-$pc = $shell.Namespace(17)
-if ($pc -eq $null) {
-    Write-Error "Windows Shell (This PC) を開けませんでした。"
-    exit 1
-}
-
-$kindle = $null
 
 try {
-    $pnp = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*VID_1949*" } | Select-Object -First 1
-    if ($pnp -and $pnp.FriendlyName) {
+    $dest = $env:KINDLE_SYNC_DEST
+    if ([string]::IsNullOrWhiteSpace($dest) -and $args.Count -gt 0) {
+        $dest = $args[0]
+    }
+    if ([string]::IsNullOrWhiteSpace($dest)) {
+        Write-Output "ERROR:同期先ディレクトリパス（KINDLE_SYNC_DEST）が指定されていません。"
+        exit 1
+    }
+    if (-not (Test-Path $dest)) {
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    }
+
+    Write-Output "PROGRESS:connecting:Kindle端末を検索中 (Windows Shell)...:15:"
+
+    $shell = New-Object -ComObject Shell.Application
+    $pc = $shell.Namespace(17)
+    if ($pc -eq $null) {
+        Write-Output "ERROR:Windows Shell (This PC) を開けませんでした。"
+        exit 1
+    }
+
+    $kindle = $null
+
+    try {
+        $pnp = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*VID_1949*" } | Select-Object -First 1
+        if ($pnp -and $pnp.FriendlyName) {
+            foreach ($item in $pc.Items()) {
+                if ($item.Name -eq $pnp.FriendlyName -or $item.Name -like "*$($pnp.FriendlyName)*" -or $pnp.FriendlyName -like "*$($item.Name)*") {
+                    $kindle = $item
+                    break
+                }
+            }
+        }
+    } catch {}
+
+    if ($kindle -eq $null) {
         foreach ($item in $pc.Items()) {
-            if ($item.Name -eq $pnp.FriendlyName -or $item.Name -like "*$($pnp.FriendlyName)*" -or $pnp.FriendlyName -like "*$($item.Name)*") {
+            if ($item.Name -like "*Kindle*" -or $item.Name -like "*Scribe*" -or $item.Type -like "*Kindle*") {
                 $kindle = $item
                 break
             }
         }
     }
-} catch {}
 
-if ($kindle -eq $null) {
-    foreach ($item in $pc.Items()) {
-        if ($item.Name -like "*Kindle*" -or $item.Type -like "*Kindle*") {
-            $kindle = $item
-            break
+    if ($kindle -eq $null) {
+        Write-Output "ERROR:Kindle端末が見つかりませんでした。エクスプローラーの「PC」配下にKindleが表示されているか、画面ロックが解除されているか確認してください。"
+        exit 1
+    }
+
+    Write-Output "PROGRESS:scanning:Kindleストレージをスキャン中...:25:"
+
+    $kindleFolder = $null
+    try {
+        $kindleFolder = $kindle.GetFolder
+    } catch {}
+
+    if ($kindleFolder -eq $null) {
+        Write-Output "ERROR:Kindleのストレージを開けませんでした。Kindle Scribeの画面ロック（パスコード）を解除してください。"
+        exit 1
+    }
+
+    $copiedCount = 0
+
+    function Copy-ShellItem($srcItem, $targetLocalDir, $expectedName) {
+        if (-not (Test-Path $targetLocalDir)) {
+            New-Item -ItemType Directory -Path $targetLocalDir -Force | Out-Null
         }
-    }
-}
+        $resolvedDir = [System.IO.Path]::GetFullPath($targetLocalDir)
+        $destFolder = $shell.Namespace($resolvedDir)
+        if ($destFolder -eq $null) {
+            Write-Output "DEBUG: Failed to get shell namespace for '$resolvedDir'"
+            return $false
+        }
 
-if ($kindle -eq $null) {
-    Write-Error "Kindle端末が見つかりませんでした。エクスプローラーの「PC」配下にKindleが表示されているか、画面ロックが解除されているか確認してください。"
-    exit 1
-}
+        try {
+            $destFolder.CopyHere($srcItem, 16)
+        } catch {
+            try {
+                $destFolder.CopyHere($srcItem)
+            } catch {
+                Write-Output "DEBUG: CopyHere failed: $_"
+                return $false
+            }
+        }
 
-Write-Output "PROGRESS:scanning:Kindleストレージをスキャン中...:25:"
-
-$kindleFolder = $kindle.GetFolder()
-if ($kindleFolder -eq $null) {
-    $kindleFolder = $kindle.GetFolder
-}
-
-$copiedCount = 0
-
-function Copy-ShellItem($srcItem, $targetLocalDir, $expectedName) {
-    if (-not (Test-Path $targetLocalDir)) {
-        New-Item -ItemType Directory -Path $targetLocalDir -Force | Out-Null
-    }
-    $resolvedDir = [System.IO.Path]::GetFullPath($targetLocalDir)
-    $destFolder = $shell.Namespace($resolvedDir)
-    if ($destFolder -eq $null) {
-        Write-Output "DEBUG: Failed to get shell namespace for '$resolvedDir'"
+        $destFilePath = [System.IO.Path]::Combine($resolvedDir, $expectedName)
+        $timeout = [DateTime]::Now.AddSeconds(20)
+        while (-not (Test-Path $destFilePath) -and [DateTime]::Now -lt $timeout) {
+            Start-Sleep -Milliseconds 200
+        }
+        if (Test-Path $destFilePath) {
+            $prevSize = -1
+            while ([DateTime]::Now -lt $timeout) {
+                try {
+                    $curSize = (Get-Item $destFilePath).Length
+                    if ($curSize -eq $prevSize -and $curSize -ge 0) {
+                        break
+                    }
+                    $prevSize = $curSize
+                } catch {}
+                Start-Sleep -Milliseconds 200
+            }
+            Write-Output "DEBUG: Copied $expectedName ($curSize bytes)"
+            return $true
+        }
+        Write-Output "DEBUG: Timeout waiting for $expectedName"
         return $false
     }
 
-    try {
-        $destFolder.CopyHere($srcItem, 16)
-    } catch {
+    function Find-Folder-ByName($parentFolder, $targetName, $maxDepth = 3) {
+        if ($parentFolder -eq $null -or $maxDepth -le 0) { return $null }
         try {
-            $destFolder.CopyHere($srcItem)
-        } catch {
-            Write-Output "DEBUG: CopyHere failed for $($srcItem.Name): $_"
-            return $false
-        }
+            foreach ($item in $parentFolder.Items()) {
+                if ($item.IsFolder) {
+                    if ($item.Name.ToLower() -eq $targetName.ToLower()) {
+                        $f = $item.GetFolder
+                        if ($f -ne $null) { return $f }
+                    }
+                    $subF = $item.GetFolder
+                    if ($subF -ne $null) {
+                        $found = Find-Folder-ByName $subF $targetName ($maxDepth - 1)
+                        if ($found -ne $null) { return $found }
+                    }
+                }
+            }
+        } catch {}
+        return $null
     }
 
-    $destFilePath = [System.IO.Path]::Combine($resolvedDir, $expectedName)
-    $timeout = [DateTime]::Now.AddSeconds(20)
-    while (-not (Test-Path $destFilePath) -and [DateTime]::Now -lt $timeout) {
-        Start-Sleep -Milliseconds 200
-    }
-    if (Test-Path $destFilePath) {
-        $prevSize = -1
-        while ([DateTime]::Now -lt $timeout) {
-            try {
-                $curSize = (Get-Item $destFilePath).Length
-                if ($curSize -eq $prevSize -and $curSize -ge 0) {
+    # 1. My Clippings.txt
+    Write-Output "PROGRESS:clippings:My Clippings.txt を取得中...:40:My Clippings.txt"
+    $docsDest = [System.IO.Path]::Combine($dest, "documents")
+    $clippingsCopied = $false
+
+    $docFolder = Find-Folder-ByName $kindleFolder "documents" 3
+    if ($docFolder -ne $null) {
+        Write-Output "DEBUG: Found documents folder in Kindle storage"
+        try {
+            foreach ($f in $docFolder.Items()) {
+                if ($f.Name.ToLower() -eq "my clippings.txt") {
+                    if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
+                        $clippingsCopied = $true
+                        $copiedCount++
+                    }
                     break
                 }
-                $prevSize = $curSize
-            } catch {}
-            Start-Sleep -Milliseconds 200
-        }
-        Write-Output "DEBUG: Successfully copied $expectedName"
-        return $true
-    }
-    Write-Output "DEBUG: Timeout waiting for $expectedName"
-    return $false
-}
-
-# Helper to find folders across shallow and nested levels (e.g. Kindle -> Internal storage -> documents)
-function Find-TargetFolder($parentFolder, $folderName) {
-    if ($parentFolder -eq $null) { return $null }
-    foreach ($item in $parentFolder.Items()) {
-        if ($item.IsFolder) {
-            $iname = $item.Name.ToLower()
-            if ($iname -eq $folderName.ToLower()) {
-                $f = $item.GetFolder()
-                if ($f -eq $null) { $f = $item.GetFolder }
-                return $f
             }
-            # Search one level deeper inside storage root
-            if ($iname -like "*storage*" -or $iname -like "*ストレージ*" -or $iname -like "*internal*") {
-                $sub = $item.GetFolder()
-                if ($sub -eq $null) { $sub = $item.GetFolder }
-                if ($sub -ne $null) {
-                    foreach ($subItem in $sub.Items()) {
-                        if ($subItem.IsFolder -and $subItem.Name.ToLower() -eq $folderName.ToLower()) {
-                            $sf = $subItem.GetFolder()
-                            if ($sf -eq $null) { $sf = $subItem.GetFolder }
-                            return $sf
+        } catch {}
+    }
+
+    # Fallback: check root items for My Clippings.txt
+    if (-not $clippingsCopied) {
+        try {
+            foreach ($f in $kindleFolder.Items()) {
+                if ($f.Name.ToLower() -eq "my clippings.txt") {
+                    if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
+                        $clippingsCopied = $true
+                        $copiedCount++
+                    }
+                    break
+                }
+            }
+        } catch {}
+    }
+
+    # 2. vocab.db
+    Write-Output "PROGRESS:vocab:vocab.db を取得中...:60:vocab.db"
+    $vocabDest = [System.IO.Path]::Combine([System.IO.Path]::Combine($dest, "system"), "vocabulary")
+
+    $sysFolder = Find-Folder-ByName $kindleFolder "system" 3
+    if ($sysFolder -ne $null) {
+        $vFolder = Find-Folder-ByName $sysFolder "vocabulary" 2
+        $searchFolder = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
+        try {
+            foreach ($f in $searchFolder.Items()) {
+                if ($f.Name.ToLower() -eq "vocab.db") {
+                    if (Copy-ShellItem $f $vocabDest "vocab.db") {
+                        $copiedCount++
+                    }
+                    break
+                }
+            }
+        } catch {}
+    }
+
+    # 3. Notebooks (.notebooks or notebooks)
+    Write-Output "PROGRESS:notebooks:Scribe手書きノートを取得中...:80:notebooks"
+    $nbFolder = Find-Folder-ByName $kindleFolder ".notebooks" 3
+    if ($nbFolder -eq $null) {
+        $nbFolder = Find-Folder-ByName $kindleFolder "notebooks" 3
+    }
+
+    if ($nbFolder -ne $null) {
+        Write-Output "DEBUG: Found notebooks folder in Kindle storage"
+        $nbDest = [System.IO.Path]::Combine($dest, ".notebooks")
+        if (-not (Test-Path $nbDest)) {
+            New-Item -ItemType Directory -Path $nbDest -Force | Out-Null
+        }
+        function Copy-NotebookFolder($srcShellFolder, $destLocalPath) {
+            if (-not (Test-Path $destLocalPath)) {
+                New-Item -ItemType Directory -Path $destLocalPath -Force | Out-Null
+            }
+            try {
+                foreach ($item in $srcShellFolder.Items()) {
+                    if ($item.IsFolder) {
+                        $subF = $item.GetFolder
+                        if ($subF -ne $null) {
+                            Copy-NotebookFolder $subF ([System.IO.Path]::Combine($destLocalPath, $item.Name))
+                        }
+                    } else {
+                        $iname = $item.Name.ToLower()
+                        if ($iname.EndsWith(".nbk") -or $iname.EndsWith(".png") -or $iname.EndsWith(".jpg")) {
+                            if (Copy-ShellItem $item $destLocalPath $item.Name) {
+                                $global:copiedCount++
+                            }
                         }
                     }
                 }
-            }
+            } catch {}
         }
+        Copy-NotebookFolder $nbFolder $nbDest
     }
-    return $null
-}
 
-# 1. My Clippings.txt
-Write-Output "PROGRESS:clippings:My Clippings.txt を取得中...:40:My Clippings.txt"
-$docsDest = [System.IO.Path]::Combine($dest, "documents")
-$clippingsCopied = $false
-
-$docFolder = Find-TargetFolder $kindleFolder "documents"
-if ($docFolder -ne $null) {
-    Write-Output "DEBUG: Found documents folder in Kindle storage"
-    foreach ($f in $docFolder.Items()) {
-        if ($f.Name.ToLower() -eq "my clippings.txt") {
-            if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
-                $clippingsCopied = $true
-                $copiedCount++
-            }
-            break
-        }
+    if ($copiedCount -eq 0) {
+        Write-Output "ERROR:Kindle端末からデータを取得できませんでした。Kindle Scribeの画面ロック（パスコード）を解除し、画面を点灯させた状態でUSB接続を確認してください。"
+        exit 1
     }
-}
 
-# Fallback: check root items for My Clippings.txt
-if (-not $clippingsCopied) {
-    foreach ($f in $kindleFolder.Items()) {
-        if ($f.Name.ToLower() -eq "my clippings.txt") {
-            if (Copy-ShellItem $f $docsDest "My Clippings.txt") {
-                $clippingsCopied = $true
-                $copiedCount++
-            }
-            break
-        }
-    }
-}
+    Write-Output "PROGRESS:transfer_complete:端末からのデータ取得が完了しました:90:"
+    Write-Output "SUCCESS:OK"
 
-# 2. vocab.db
-Write-Output "PROGRESS:vocab:vocab.db を取得中...:60:vocab.db"
-$vocabDest = [System.IO.Path]::Combine([System.IO.Path]::Combine($dest, "system"), "vocabulary")
-
-$sysFolder = Find-TargetFolder $kindleFolder "system"
-if ($sysFolder -ne $null) {
-    $vFolder = Find-TargetFolder $sysFolder "vocabulary"
-    $searchFolder = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
-    foreach ($f in $searchFolder.Items()) {
-        if ($f.Name.ToLower() -eq "vocab.db") {
-            if (Copy-ShellItem $f $vocabDest "vocab.db") {
-                $copiedCount++
-            }
-            break
-        }
-    }
-}
-
-# 3. Notebooks (.notebooks or notebooks)
-Write-Output "PROGRESS:notebooks:Scribe手書きノートを取得中...:80:notebooks"
-$nbFolder = Find-TargetFolder $kindleFolder ".notebooks"
-if ($nbFolder -eq $null) {
-    $nbFolder = Find-TargetFolder $kindleFolder "notebooks"
-}
-
-if ($nbFolder -ne $null) {
-    Write-Output "DEBUG: Found notebooks folder in Kindle storage"
-    $nbDest = [System.IO.Path]::Combine($dest, ".notebooks")
-    if (-not (Test-Path $nbDest)) {
-        New-Item -ItemType Directory -Path $nbDest -Force | Out-Null
-    }
-    function Copy-NotebookFolder($srcShellFolder, $destLocalPath) {
-        if (-not (Test-Path $destLocalPath)) {
-            New-Item -ItemType Directory -Path $destLocalPath -Force | Out-Null
-        }
-        foreach ($item in $srcShellFolder.Items()) {
-            if ($item.IsFolder) {
-                $subF = $item.GetFolder()
-                if ($subF -eq $null) { $subF = $item.GetFolder }
-                Copy-NotebookFolder $subF ([System.IO.Path]::Combine($destLocalPath, $item.Name))
-            } else {
-                $iname = $item.Name.ToLower()
-                if ($iname.EndsWith(".nbk") -or $iname.EndsWith(".png") -or $iname.EndsWith(".jpg")) {
-                    if (Copy-ShellItem $item $destLocalPath $item.Name) {
-                        $global:copiedCount++
-                    }
-                }
-            }
-        }
-    }
-    Copy-NotebookFolder $nbFolder $nbDest
-}
-
-if ($copiedCount -eq 0) {
-    Write-Error "Kindle端末からデータを取得できませんでした。Kindle Scribeの画面ロック（パスコード）を解除し、画面を点灯させた状態でUSB接続を確認してください。"
+} catch {
+    $errMsg = $_.Exception.Message
+    Write-Output "ERROR:$errMsg"
     exit 1
 }
-
-Write-Output "PROGRESS:transfer_complete:端末からのデータ取得が完了しました:90:"
-Write-Output "SUCCESS:OK"
 "#;
 
         let mut cmd = std::process::Command::new("powershell");
@@ -332,7 +342,7 @@ Write-Output "SUCCESS:OK"
                 } else if line_str.starts_with("DEBUG:") {
                     log::debug!("{}", line_str);
                 } else if line_str.starts_with("ERROR:") {
-                    last_error = line_str.to_string();
+                    last_error = line_str.trim_start_matches("ERROR:").trim().to_string();
                 }
             }
         }
@@ -345,30 +355,32 @@ Write-Output "SUCCESS:OK"
                 let _ = stderr.read_to_string(&mut stderr_msg);
             }
 
-            // Extract concise user-facing error message, ignoring PowerShell script dump lines
-            let mut user_msg = String::new();
-            for line in stderr_msg.lines() {
-                let trimmed = line.trim();
-                if (trimmed.contains("Kindle") || trimmed.contains("エラー") || trimmed.contains("Error"))
-                    && !trimmed.starts_with('+')
-                    && !trimmed.starts_with('~')
-                    && !trimmed.contains("CategoryInfo")
-                    && !trimmed.contains("FullyQualifiedErrorId")
-                {
-                    user_msg = trimmed.to_string();
-                    break;
-                }
-            }
-
-            let err_detail = if !user_msg.is_empty() {
-                user_msg
-            } else if !last_error.is_empty() {
+            // Prioritize last_error from stdout, which has clean message
+            let err_detail = if !last_error.is_empty() {
                 last_error
             } else {
-                "Kindle端末からデータを取得できませんでした。Kindle端末の画面ロックを解除してUSB接続を確認してください。".to_string()
+                let mut fallback_msg = String::new();
+                for line in stderr_msg.lines() {
+                    let trimmed = line.trim();
+                    if (trimmed.contains("Kindle") || trimmed.contains("エラー"))
+                        && !trimmed.starts_with('+')
+                        && !trimmed.starts_with('~')
+                        && !trimmed.contains("CategoryInfo")
+                        && !trimmed.contains("FullyQualifiedErrorId")
+                        && !trimmed.contains("ErrorActionPreference")
+                    {
+                        fallback_msg = trimmed.to_string();
+                        break;
+                    }
+                }
+                if !fallback_msg.is_empty() {
+                    fallback_msg
+                } else {
+                    "Kindle端末からデータを取得できませんでした。Kindle端末の画面ロックを解除してUSB接続を確認してください。".to_string()
+                }
             };
 
-            return Err(format!("MTP同期エラー: {}", err_detail));
+            return Err(err_detail);
         }
 
         Ok(cache_path.to_path_buf())

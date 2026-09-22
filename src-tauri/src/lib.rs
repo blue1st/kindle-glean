@@ -153,10 +153,8 @@ fn sync_now(
                     log::info!("Falling back to UMS mount path for sync: {}", path);
                     path.clone()
                 } else {
-                    return Err(format!(
-                        "MTP同期エラー: {}. Kindle端末の画面ロック解除とUSB接続を確認してください。",
-                        e
-                    ));
+                    let clean = e.trim_start_matches("MTP同期エラー:").trim();
+                    return Err(format!("MTP同期エラー: {}", clean));
                 }
 
                 #[cfg(not(target_os = "windows"))]
@@ -164,10 +162,8 @@ fn sync_now(
                     log::info!("Falling back to UMS mount path for sync: {}", path);
                     path.clone()
                 } else {
-                    return Err(format!(
-                        "MTP同期エラー: {}. Kindle端末の画面ロック解除とUSB接続を確認してください。",
-                        e
-                    ));
+                    let clean = e.trim_start_matches("MTP同期エラー:").trim();
+                    return Err(format!("MTP同期エラー: {}", clean));
                 }
             }
         }
