@@ -13,6 +13,7 @@ import {
   readImageBase64,
   previewClippings,
   openFolder,
+  deleteSyncedNotebook,
 } from "../api";
 import {
   Highlighter,
@@ -39,6 +40,7 @@ import {
   Loader2,
   AlertCircle,
   Download,
+  Trash2,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -52,12 +54,16 @@ interface Props {
   config: SyncConfig;
   initialTab?: ViewerTab;
   initialClipType?: "all" | "highlight" | "note";
+  refreshTrigger?: number;
+  onDataChanged?: () => void;
 }
 
 export const ContentViewer: React.FC<Props> = ({
   config,
   initialTab = "clippings",
   initialClipType = "all",
+  refreshTrigger,
+  onDataChanged,
 }) => {
   const [currentTab, setCurrentTab] = useState<ViewerTab>(initialTab);
 
@@ -112,8 +118,10 @@ export const ContentViewer: React.FC<Props> = ({
     }, 5000);
   };
 
-  const loadAllData = async () => {
-    setLoading(true);
+  const loadAllData = async (silent: boolean = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const [clips, nbs, vcb] = await Promise.all([
         getSyncedClippings(),
@@ -127,13 +135,40 @@ export const ContentViewer: React.FC<Props> = ({
     } catch (err) {
       console.error("Failed to load synced contents:", err);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     loadAllData();
   }, []);
+
+  useEffect(() => {
+    if (refreshTrigger && refreshTrigger > 0) {
+      loadAllData(true);
+    }
+  }, [refreshTrigger]);
+
+  const handleDeleteNotebook = async (nb: NotebookSummary) => {
+    const confirmed = window.confirm(
+      `ノート「${nb.display_title}」をライブラリ一覧から削除しますか？\n（※PC上の出力ファイルやKindle内の元データは削除されません）`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteSyncedNotebook(nb.id);
+      setNotebooks((prev) => prev.filter((item) => item.id !== nb.id));
+      if (selectedNotebook?.id === nb.id) {
+        setSelectedNotebook(null);
+      }
+      onDataChanged?.();
+    } catch (err) {
+      console.error("Failed to delete notebook:", err);
+      alert("ノートの削除に失敗しました: " + String(err));
+    }
+  };
 
   // Handle manual clippings file open
   const handleOpenClippingsFile = async () => {
@@ -410,7 +445,7 @@ export const ContentViewer: React.FC<Props> = ({
         </div>
 
         <button
-          onClick={loadAllData}
+          onClick={() => loadAllData()}
           disabled={loading}
           title="最新データを再読み込み"
           className="p-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 transition-colors"
@@ -597,6 +632,7 @@ export const ContentViewer: React.FC<Props> = ({
                   notebook={nb}
                   onSelect={() => handleSelectNotebook(nb)}
                   onOpenFolder={() => openFolder(getSubfolderPath(`Notebooks/${nb.title}`))}
+                  onDelete={() => handleDeleteNotebook(nb)}
                 />
               ))}
             </div>
@@ -773,6 +809,15 @@ export const ContentViewer: React.FC<Props> = ({
                   title="ノートの保存先フォルダを開く"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Delete from library */}
+                <button
+                  onClick={() => handleDeleteNotebook(selectedNotebook)}
+                  className="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 text-xs font-medium border border-zinc-700/50 transition-colors flex items-center gap-1 cursor-pointer"
+                  title="このノートをライブラリ一覧から削除"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
 
                 {/* Close Modal */}
@@ -979,7 +1024,8 @@ const NotebookCard: React.FC<{
   notebook: NotebookSummary;
   onSelect: () => void;
   onOpenFolder: () => void;
-}> = ({ notebook, onSelect, onOpenFolder }) => {
+  onDelete?: () => void;
+}> = ({ notebook, onSelect, onOpenFolder, onDelete }) => {
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1033,16 +1079,31 @@ const NotebookCard: React.FC<{
           <span className="text-xs text-indigo-400 font-medium group-hover:underline">
             ノートを開く →
           </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenFolder();
-            }}
-            title="ノートの保存先フォルダを開く"
-            className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenFolder();
+              }}
+              title="ノートの保存先フォルダを開く"
+              className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+            </button>
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                title="ライブラリ一覧から削除"
+                className="p-1.5 rounded-lg hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

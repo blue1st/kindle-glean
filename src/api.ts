@@ -90,6 +90,10 @@ export async function getSyncedNotebooks(): Promise<NotebookSummary[]> {
   return await invoke<NotebookSummary[]>("get_synced_notebooks");
 }
 
+export async function deleteSyncedNotebook(id: string): Promise<void> {
+  await invoke("delete_synced_notebook", { id });
+}
+
 export async function getNotebookPages(notebookTitle: string): Promise<string[]> {
   return await invoke<string[]>("get_notebook_pages", { notebookTitle });
 }

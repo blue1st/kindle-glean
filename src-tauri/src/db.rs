@@ -116,6 +116,17 @@ impl Database {
         let _ = conn.execute("ALTER TABLE synced_notebooks ADD COLUMN content_hash TEXT", []);
         let _ = conn.execute("ALTER TABLE synced_notebooks ADD COLUMN relative_folder TEXT", []);
         let _ = conn.execute("DELETE FROM synced_notebooks WHERE id LIKE 'notebook_%' OR id LIKE 'nbk:notebook_%'", []);
+        // Purge Kindle Scribe built-in templates and ebook annotations accidentally saved in older versions
+        let _ = conn.execute(
+            "DELETE FROM synced_notebooks
+             WHERE id LIKE '%template%'
+                OR title LIKE '%template%'
+                OR relative_folder LIKE '%template%'
+                OR title LIKE 'B0%'
+                OR title LIKE '%!!EBOK!!%'
+                OR LOWER(title) IN ('grid', 'lines', 'checklist', 'dot_grid', 'storyboard', 'blank')",
+            [],
+        );
 
         // Sync history logs
         conn.execute(
@@ -443,6 +454,12 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, title, content_hash, last_modified, synced_at, relative_folder
              FROM synced_notebooks
+             WHERE id NOT LIKE '%template%'
+               AND title NOT LIKE '%template%'
+               AND (relative_folder IS NULL OR relative_folder NOT LIKE '%template%')
+               AND title NOT LIKE 'B0%'
+               AND title NOT LIKE '%!!EBOK!!%'
+               AND LOWER(title) NOT IN ('grid', 'lines', 'checklist', 'dot_grid', 'storyboard', 'blank')
              ORDER BY synced_at DESC",
         )?;
 
@@ -491,6 +508,12 @@ impl Database {
         Ok(list)
     }
 
+    pub fn delete_synced_notebook(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM synced_notebooks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn get_synced_counts(&self) -> Result<SyncedCounts> {
         let conn = self.conn.lock().unwrap();
         let highlights: i64 = conn
@@ -514,9 +537,17 @@ impl Database {
             .unwrap_or(0);
 
         let notebooks: i64 = conn
-            .query_row("SELECT COUNT(*) FROM synced_notebooks", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM synced_notebooks
+                 WHERE id NOT LIKE '%template%'
+                   AND title NOT LIKE '%template%'
+                   AND (relative_folder IS NULL OR relative_folder NOT LIKE '%template%')
+                   AND title NOT LIKE 'B0%'
+                   AND title NOT LIKE '%!!EBOK!!%'
+                   AND LOWER(title) NOT IN ('grid', 'lines', 'checklist', 'dot_grid', 'storyboard', 'blank')",
+                [],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
 
         Ok(SyncedCounts {
@@ -804,6 +835,18 @@ mod tests {
         db.mark_notebook_synced("nbk:1", "Note 1", "hash1_updated", 2000, None).unwrap();
         let counts_after_update = db.get_synced_counts().unwrap();
         assert_eq!(counts_after_update.notebooks, 2);
+
+        // Add a template notebook - should be ignored in counts and get_all_synced_notebooks
+        db.mark_notebook_synced("nbk:template:grid", "grid", "hash_t", 1000, None).unwrap();
+        let counts_with_tpl = db.get_synced_counts().unwrap();
+        assert_eq!(counts_with_tpl.notebooks, 2);
+        let nbs = db.get_all_synced_notebooks().unwrap();
+        assert_eq!(nbs.len(), 2);
+
+        // Delete a notebook
+        db.delete_synced_notebook("nbk:1").unwrap();
+        let counts_after_delete = db.get_synced_counts().unwrap();
+        assert_eq!(counts_after_delete.notebooks, 1);
     }
 }
 

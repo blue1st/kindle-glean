@@ -383,6 +383,10 @@ fn get_synced_notebooks(state: State<'_, AppState>) -> Result<Vec<NotebookSummar
             nb_root.join(&nb.title)
         };
 
+        if !dir.is_dir() {
+            continue;
+        }
+
         let candidates = [
             dir.join("thumbnail.png"),
             dir.join("page_1.png"),
@@ -409,6 +413,11 @@ fn get_synced_notebooks(state: State<'_, AppState>) -> Result<Vec<NotebookSummar
     }
 
     Ok(list)
+}
+
+#[tauri::command]
+fn delete_synced_notebook(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.delete_synced_notebook(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -748,6 +757,7 @@ pub fn run() {
             get_synced_clippings,
             get_synced_vocab,
             get_synced_notebooks,
+            delete_synced_notebook,
             get_notebook_pages,
             read_image_base64,
             export_notebook_pages,

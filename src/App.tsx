@@ -31,6 +31,7 @@ type ActiveView =
 
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>({ type: "home" });
+  const [contentRefreshKey, setContentRefreshKey] = useState(0);
   const [device, setDevice] = useState<DeviceInfo | null>(null);
   const [config, setConfig] = useState<SyncConfig | null>(null);
   const [syncHistory, setSyncHistory] = useState<SyncStats[]>([]);
@@ -42,6 +43,7 @@ export function App() {
   const refreshHistoryAndCounts = () => {
     getSyncHistory().then(setSyncHistory);
     getSyncedCounts().then(setSyncedCounts);
+    setContentRefreshKey((k) => k + 1);
   };
 
   const loadAll = async () => {
@@ -216,13 +218,15 @@ export function App() {
           />
         )}
 
-        {activeView.type === "content" && (
+        <div className={activeView.type === "content" ? "block" : "hidden"}>
           <ContentViewer
             config={config}
-            initialTab={activeView.tab}
-            initialClipType={activeView.filterType}
+            initialTab={activeView.type === "content" ? activeView.tab : undefined}
+            initialClipType={activeView.type === "content" ? activeView.filterType : undefined}
+            refreshTrigger={contentRefreshKey}
+            onDataChanged={refreshHistoryAndCounts}
           />
-        )}
+        </div>
 
         {activeView.type === "settings" && (
           <Settings
