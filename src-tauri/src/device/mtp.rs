@@ -154,6 +154,10 @@ try {
     if (-not (Test-Path $docsDestDir)) {
         New-Item -ItemType Directory -Path $docsDestDir -Force | Out-Null
     }
+    $destFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings.txt")
+    if (Test-Path $destFile) {
+        Remove-Item -Path $destFile -Force -ErrorAction SilentlyContinue
+    }
     $docsDestShell = $shell.Namespace($docsDestDir)
 
     if ($docItem -ne $null -and $docsDestShell -ne $null) {
@@ -161,8 +165,7 @@ try {
         if ($docFolder -ne $null) {
             foreach ($f in $docFolder.Items()) {
                 if ($f.Name.ToLower() -eq "my clippings.txt") {
-                    $docsDestShell.CopyHere($f, 16)
-                    $destFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings.txt")
+                    $docsDestShell.CopyHere($f, 1556)
                     for ($i = 0; $i -lt 30; $i++) {
                         if (Test-Path $destFile) { break }
                         Start-Sleep -Milliseconds 200
@@ -174,11 +177,10 @@ try {
     }
 
     # Fallback for My Clippings in storageRoot
-    $destFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings.txt")
     if (-not (Test-Path $destFile) -and $docsDestShell -ne $null) {
         foreach ($f in $storageRoot.Items()) {
             if ($f.Name.ToLower() -eq "my clippings.txt") {
-                $docsDestShell.CopyHere($f, 16)
+                $docsDestShell.CopyHere($f, 1556)
                 for ($i = 0; $i -lt 30; $i++) {
                     if (Test-Path $destFile) { break }
                     Start-Sleep -Milliseconds 200
@@ -193,6 +195,10 @@ try {
     $vocabDestDir = [System.IO.Path]::Combine([System.IO.Path]::Combine($resolvedDest, "system"), "vocabulary")
     if (-not (Test-Path $vocabDestDir)) {
         New-Item -ItemType Directory -Path $vocabDestDir -Force | Out-Null
+    }
+    $vFile = [System.IO.Path]::Combine($vocabDestDir, "vocab.db")
+    if (Test-Path $vFile) {
+        Remove-Item -Path $vFile -Force -ErrorAction SilentlyContinue
     }
     $vocabDestShell = $shell.Namespace($vocabDestDir)
 
@@ -209,8 +215,7 @@ try {
             $searchF = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
             foreach ($f in $searchF.Items()) {
                 if ($f.Name.ToLower() -eq "vocab.db") {
-                    $vocabDestShell.CopyHere($f, 16)
-                    $vFile = [System.IO.Path]::Combine($vocabDestDir, "vocab.db")
+                    $vocabDestShell.CopyHere($f, 1556)
                     for ($i = 0; $i -lt 30; $i++) {
                         if (Test-Path $vFile) { break }
                         Start-Sleep -Milliseconds 200
@@ -225,27 +230,52 @@ try {
     Write-Output "PROGRESS:notebooks:Scribe手書きノートを取得中...:80:notebooks"
     if ($nbItem -ne $null) {
         $nbLocalDest = [System.IO.Path]::Combine($resolvedDest, ".notebooks")
-        if (-not (Test-Path $nbLocalDest)) {
-            New-Item -ItemType Directory -Path $nbLocalDest -Force | Out-Null
+        # Clean destination to avoid any Windows Explorer folder replacement prompts
+        if (Test-Path $nbLocalDest) {
+            Remove-Item -Path $nbLocalDest -Recurse -Force -ErrorAction SilentlyContinue
         }
+        New-Item -ItemType Directory -Path $nbLocalDest -Force | Out-Null
         $nbDestShell = $shell.Namespace($nbLocalDest)
         if ($nbDestShell -ne $null) {
             $nbFolder = $nbItem.GetFolder
             if ($nbFolder -ne $null) {
                 foreach ($nbSub in $nbFolder.Items()) {
-                    $nbDestShell.CopyHere($nbSub, 16)
+                    # 1556 = 4 (silent) + 16 (no confirm) + 512 (no dir confirm) + 1024 (no error UI)
+                    $nbDestShell.CopyHere($nbSub, 1556)
                 }
-                # Wait for items to transfer
-                $deadline = [DateTime]::Now.AddSeconds(30)
-                $prevCount = -1
+                # Wait for items to transfer by monitoring byte size stability
+                $deadline = [DateTime]::Now.AddSeconds(60)
+                $stableCount = 0
+                $prevBytes = -1
                 while ([DateTime]::Now -lt $deadline) {
                     Start-Sleep -Milliseconds 500
-                    $curCount = @(Get-ChildItem $nbLocalDest -Recurse -ErrorAction SilentlyContinue).Count
-                    if ($curCount -gt 0 -and $curCount -eq $prevCount) {
-                        break
+                    $files = @(Get-ChildItem -Path $nbLocalDest -Recurse -File -ErrorAction SilentlyContinue)
+                    if ($files.Count -gt 0) {
+                        $totalBytes = ($files | Measure-Object -Property Length -Sum).Sum
+                        if ($totalBytes -eq $prevBytes) {
+                            $stableCount++
+                            if ($stableCount -ge 4) {
+                                break
+                            }
+                        } else {
+                            $stableCount = 0
+                            $prevBytes = $totalBytes
+                        }
                     }
-                    $prevCount = $curCount
                 }
+
+                # Normalize extensionless nbk files to also exist as <UUID>.nbk
+                Get-ChildItem -Path $nbLocalDest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    if ($_.Name.ToLower() -eq "nbk") {
+                        $uuidName = $_.Directory.Name
+                        $targetPath = [System.IO.Path]::Combine($nbLocalDest, "$uuidName.nbk")
+                        if (-not (Test-Path $targetPath)) {
+                            Copy-Item -Path $_.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+
+                $curCount = @(Get-ChildItem $nbLocalDest -Recurse -ErrorAction SilentlyContinue).Count
                 Write-Output "DEBUG: Notebook files copied: $curCount"
             }
         }

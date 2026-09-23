@@ -255,19 +255,40 @@ impl SyncOrchestrator {
 
     fn process_notebooks(&self, dir: &Path, generator: &MarkdownGenerator) -> Result<usize, String> {
         let mut count = 0;
+        let mut processed_ids = std::collections::HashSet::new();
 
         for entry in WalkDir::new(dir).max_depth(4).into_iter().flatten() {
             let path = entry.path();
             if path.is_file() {
-                let is_nbk = path.extension().map(|e| e == "nbk" || e == "zip").unwrap_or(false);
+                let fname_lower = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let ext_lower = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let is_nbk = ext_lower == "nbk" || ext_lower == "zip" || fname_lower == "nbk";
+
                 if is_nbk {
-                    let rel_folder = path
-                        .parent()
-                        .and_then(|p| p.strip_prefix(dir).ok())
-                        .map(|p| p.to_string_lossy().to_string())
-                        .filter(|s| !s.is_empty());
+                    let rel_folder = if fname_lower == "nbk" {
+                        path.parent()
+                            .and_then(|p| p.parent())
+                            .and_then(|p| p.strip_prefix(dir).ok())
+                            .map(|p| p.to_string_lossy().to_string())
+                            .filter(|s| !s.is_empty())
+                    } else {
+                        path.parent()
+                            .and_then(|p| p.strip_prefix(dir).ok())
+                            .map(|p| p.to_string_lossy().to_string())
+                            .filter(|s| !s.is_empty())
+                    };
 
                     if let Ok(notebook) = NotebookParser::parse_file_with_folder(path, rel_folder.clone()) {
+                        if !processed_ids.insert(notebook.id.clone()) {
+                            continue;
+                        }
+
                         let notebook_md = generator.get_notebook_path(&notebook.title, rel_folder.as_deref());
                         let file_exists = notebook_md.exists();
                         let is_synced = self.db.is_notebook_synced(&notebook.id, &notebook.content_hash).unwrap_or(false);

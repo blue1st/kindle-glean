@@ -135,10 +135,23 @@ impl NotebookParser {
         relative_folder: Option<String>,
     ) -> Result<Notebook, String> {
         let path = path.as_ref();
-        let title = path
+        let fname_lower = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let raw_stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled Notebook".to_string());
+
+        let title = if fname_lower == "nbk" || raw_stem.to_lowercase() == "nbk" {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(raw_stem)
+        } else {
+            raw_stem
+        };
 
         let metadata = std::fs::metadata(path)
             .map_err(|e| format!("Failed to read metadata for {}: {}", path.display(), e))?;
@@ -166,7 +179,8 @@ impl NotebookParser {
         let is_nbk = path
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase() == "nbk")
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || fname_lower == "nbk";
 
         if is_nbk {
             let timestamp = std::time::SystemTime::now()
@@ -432,6 +446,22 @@ mod tests {
                 assert!(!nb.pages[1].image_data.is_empty(), "Page 2 should contain SVG stroke data");
             }
         }
+    }
+
+    #[test]
+    fn test_parse_extensionless_nbk_in_uuid_folder() {
+        let temp_dir = std::env::temp_dir().join("test_scribe_nbk_uuid");
+        let uuid_dir = temp_dir.join("87e9358b-7c2b-34dc-b250-93aace5dd640");
+        let _ = std::fs::create_dir_all(&uuid_dir);
+        let nbk_file = uuid_dir.join("nbk");
+        std::fs::write(&nbk_file, b"dummy content for testing").unwrap();
+
+        let nb = NotebookParser::parse_file(&nbk_file).expect("Must parse dummy extensionless nbk");
+        assert_eq!(nb.title, "87e9358b-7c2b-34dc-b250-93aace5dd640");
+        assert_eq!(nb.id, "nbk:87e9358b-7c2b-34dc-b250-93aace5dd640");
+        assert_eq!(nb.pages.len(), 1, "Should generate fallback page for dummy binary");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 
