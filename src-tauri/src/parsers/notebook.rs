@@ -66,9 +66,43 @@ fn find_converter_binary() -> Option<std::path::PathBuf> {
 }
 
 fn find_python_command() -> Option<String> {
-    let candidates = ["python3", "python"];
+    #[allow(unused_mut)]
+    let mut candidates = vec![
+        "python3".to_string(),
+        "python".to_string(),
+        "py".to_string(),
+    ];
+
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let base = std::path::PathBuf::from(local_app_data).join("Programs").join("Python");
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for e in entries.flatten() {
+                    let py_exe = e.path().join("python.exe");
+                    if py_exe.is_file() {
+                        candidates.push(py_exe.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        for root in [
+            "C:\\Python312\\python.exe",
+            "C:\\Python311\\python.exe",
+            "C:\\Python310\\python.exe",
+            "C:\\Python39\\python.exe",
+            "C:\\Program Files\\Python312\\python.exe",
+            "C:\\Program Files\\Python311\\python.exe",
+            "C:\\Program Files\\Python310\\python.exe",
+        ] {
+            if std::path::Path::new(root).is_file() {
+                candidates.push(root.to_string());
+            }
+        }
+    }
+
     for cmd in candidates {
-        let mut check = std::process::Command::new(cmd);
+        let mut check = std::process::Command::new(&cmd);
         check.arg("--version");
         #[cfg(windows)]
         {
@@ -77,7 +111,7 @@ fn find_python_command() -> Option<String> {
         }
         if let Ok(output) = check.output() {
             if output.status.success() {
-                return Some(cmd.to_string());
+                return Some(cmd);
             }
         }
     }
@@ -105,14 +139,17 @@ fn find_convert_script() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 3. Executable / App bundle directory
+    // 3. Executable / App bundle directory (Windows and macOS)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let exe_candidates = [
                 exe_dir.join("scripts/kfx_parser/convert_notebook.py"),
+                exe_dir.join("resources/scripts/kfx_parser/convert_notebook.py"),
+                exe_dir.join("../resources/scripts/kfx_parser/convert_notebook.py"),
                 exe_dir.join("../Resources/scripts/kfx_parser/convert_notebook.py"),
                 exe_dir.join("../Resources/src-tauri/scripts/kfx_parser/convert_notebook.py"),
                 exe_dir.join("../../Resources/scripts/kfx_parser/convert_notebook.py"),
+                exe_dir.join("_up_/scripts/kfx_parser/convert_notebook.py"),
             ];
             for p in &exe_candidates {
                 if p.is_file() {

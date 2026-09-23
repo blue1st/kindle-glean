@@ -271,6 +271,31 @@ impl SyncOrchestrator {
                 let is_nbk = ext_lower == "nbk" || ext_lower == "zip" || fname_lower == "nbk";
 
                 if is_nbk {
+                    let path_str = path.to_string_lossy().to_lowercase();
+                    // Skip system templates, trash, and system internals
+                    if path_str.contains("template") || path_str.contains(".trash") || path_str.contains("system") {
+                        continue;
+                    }
+
+                    let raw_title = if fname_lower == "nbk" {
+                        path.parent()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    } else {
+                        path.file_stem()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    };
+
+                    // Skip ebook annotations (Kindle ASINs start with B0 or contain !!EBOK!!)
+                    if raw_title.starts_with("B0")
+                        || raw_title.contains("!!EBOK!!")
+                        || raw_title.to_lowercase().contains("template")
+                    {
+                        continue;
+                    }
+
                     let rel_folder = if fname_lower == "nbk" {
                         path.parent()
                             .and_then(|p| p.parent())
@@ -486,6 +511,48 @@ Essential advice for all developers!
         assert_eq!(stats2.notes_added, 0);
 
         // Clean up
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_process_notebooks_filters_templates_and_ebooks() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let orchestrator = SyncOrchestrator::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("test_nbk_filter_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let nb_dir = temp_dir.join(".notebooks");
+        let vault_dir = temp_dir.join("Vault");
+
+        // 1. Template notebook (should be ignored)
+        let template_dir = nb_dir.join("templates").join("grid_template");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("nbk"), b"dummy template").unwrap();
+
+        // 2. Ebook annotation (Kindle ASIN starting with B0, should be ignored)
+        let ebook_dir = nb_dir.join("B0BWSV8K5J");
+        fs::create_dir_all(&ebook_dir).unwrap();
+        fs::write(ebook_dir.join("nbk"), b"dummy ebook note").unwrap();
+
+        // 3. Ebook annotation with !!EBOK!! in name (should be ignored)
+        let ebok_dir = nb_dir.join("SampleBook!!EBOK!!");
+        fs::create_dir_all(&ebok_dir).unwrap();
+        fs::write(ebok_dir.join("nbk"), b"dummy ebok note").unwrap();
+
+        // 4. Real User Notebook 1 (UUID folder with extensionless nbk)
+        let real_nb1 = nb_dir.join("87e9358b-7c2b-34dc-b250-93aace5dd640");
+        fs::create_dir_all(&real_nb1).unwrap();
+        fs::write(real_nb1.join("nbk"), b"dummy real note 1").unwrap();
+
+        // 5. Real User Notebook 2 (UUID.nbk file)
+        let real_nb2_file = nb_dir.join("a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d.nbk");
+        fs::write(&real_nb2_file, b"dummy real note 2").unwrap();
+
+        let generator = MarkdownGenerator::new(&vault_dir, "Kindle");
+        generator.ensure_directories().unwrap();
+
+        let count = orchestrator.process_notebooks(&nb_dir, &generator).unwrap();
+        assert_eq!(count, 2, "Must process exactly the 2 real user notebooks and filter out templates/ebooks");
+
         fs::remove_dir_all(&temp_dir).ok();
     }
 }

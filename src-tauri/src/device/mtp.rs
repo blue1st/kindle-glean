@@ -130,22 +130,44 @@ try {
         exit 1
     }
 
-    # 3. Locate Target Folders in Storage Root
-    $docItem = $null
-    $nbItem = $null
-    $sysItem = $null
-
-    foreach ($item in $storageRoot.Items()) {
-        $lname = $item.Name.ToLower()
-        if ($item.IsFolder) {
-            if ($lname -eq "documents") {
-                $docItem = $item
-            } elseif ($lname -eq ".notebooks" -or $lname -eq "notebooks") {
-                $nbItem = $item
-            } elseif ($lname -eq "system") {
-                $sysItem = $item
+    function Get-ChildItem-Shell($parentFolder, $targetName) {
+        if ($parentFolder -eq $null) { return $null }
+        try {
+            $item = $parentFolder.ParseName($targetName)
+            if ($item -ne $null) { return $item }
+        } catch {}
+        try {
+            $tLower = $targetName.ToLower()
+            foreach ($it in $parentFolder.Items()) {
+                $iLower = $it.Name.ToLower()
+                if ($iLower -eq $tLower -or $iLower -like "$tLower*" -or "$tLower" -like "$iLower*") {
+                    return $it
+                }
             }
+        } catch {}
+        return $null
+    }
+
+    # 3. Locate Target Folders in Storage Root (or kindleFolder fallback)
+    $docItem = Get-ChildItem-Shell $storageRoot "documents"
+    if ($docItem -eq $null -and $storageRoot -ne $kindleFolder) {
+        $docItem = Get-ChildItem-Shell $kindleFolder "documents"
+    }
+
+    $nbItem = Get-ChildItem-Shell $storageRoot ".notebooks"
+    if ($nbItem -eq $null) {
+        $nbItem = Get-ChildItem-Shell $storageRoot "notebooks"
+    }
+    if ($nbItem -eq $null -and $storageRoot -ne $kindleFolder) {
+        $nbItem = Get-ChildItem-Shell $kindleFolder ".notebooks"
+        if ($nbItem -eq $null) {
+            $nbItem = Get-ChildItem-Shell $kindleFolder "notebooks"
         }
+    }
+
+    $sysItem = Get-ChildItem-Shell $storageRoot "system"
+    if ($sysItem -eq $null -and $storageRoot -ne $kindleFolder) {
+        $sysItem = Get-ChildItem-Shell $kindleFolder "system"
     }
 
     # 4. Copy "My Clippings.txt"
@@ -160,33 +182,33 @@ try {
     }
     $docsDestShell = $shell.Namespace($docsDestDir)
 
-    if ($docItem -ne $null -and $docsDestShell -ne $null) {
+    $clipItem = $null
+    if ($docItem -ne $null) {
         $docFolder = $docItem.GetFolder
         if ($docFolder -ne $null) {
-            foreach ($f in $docFolder.Items()) {
-                if ($f.Name.ToLower() -eq "my clippings.txt") {
-                    $docsDestShell.CopyHere($f, 1556)
-                    for ($i = 0; $i -lt 30; $i++) {
-                        if (Test-Path $destFile) { break }
-                        Start-Sleep -Milliseconds 200
-                    }
-                    break
-                }
+            $clipItem = Get-ChildItem-Shell $docFolder "My Clippings.txt"
+            if ($clipItem -eq $null) {
+                $clipItem = Get-ChildItem-Shell $docFolder "My Clippings"
             }
         }
     }
+    if ($clipItem -eq $null) {
+        $clipItem = Get-ChildItem-Shell $storageRoot "My Clippings.txt"
+    }
+    if ($clipItem -eq $null -and $storageRoot -ne $kindleFolder) {
+        $clipItem = Get-ChildItem-Shell $kindleFolder "My Clippings.txt"
+    }
 
-    # Fallback for My Clippings in storageRoot
-    if (-not (Test-Path $destFile) -and $docsDestShell -ne $null) {
-        foreach ($f in $storageRoot.Items()) {
-            if ($f.Name.ToLower() -eq "my clippings.txt") {
-                $docsDestShell.CopyHere($f, 1556)
-                for ($i = 0; $i -lt 30; $i++) {
-                    if (Test-Path $destFile) { break }
-                    Start-Sleep -Milliseconds 200
-                }
-                break
+    if ($clipItem -ne $null -and $docsDestShell -ne $null) {
+        $docsDestShell.CopyHere($clipItem, 1556)
+        for ($i = 0; $i -lt 50; $i++) {
+            if (Test-Path $destFile) { break }
+            $extLessFile = [System.IO.Path]::Combine($docsDestDir, "My Clippings")
+            if (Test-Path $extLessFile) {
+                Rename-Item -Path $extLessFile -NewName "My Clippings.txt" -Force -ErrorAction SilentlyContinue
+                if (Test-Path $destFile) { break }
             }
+            Start-Sleep -Milliseconds 200
         }
     }
 
@@ -202,27 +224,31 @@ try {
     }
     $vocabDestShell = $shell.Namespace($vocabDestDir)
 
-    if ($sysItem -ne $null -and $vocabDestShell -ne $null) {
+    $dbItem = $null
+    if ($sysItem -ne $null) {
         $sysFolder = $sysItem.GetFolder
         if ($sysFolder -ne $null) {
-            $vFolder = $null
-            foreach ($it in $sysFolder.Items()) {
-                if ($it.IsFolder -and $it.Name.ToLower() -eq "vocabulary") {
-                    $vFolder = $it.GetFolder
-                    break
+            $vFolderItem = Get-ChildItem-Shell $sysFolder "vocabulary"
+            $searchF = if ($vFolderItem -ne $null) { $vFolderItem.GetFolder } else { $sysFolder }
+            if ($searchF -ne $null) {
+                $dbItem = Get-ChildItem-Shell $searchF "vocab.db"
+                if ($dbItem -eq $null) {
+                    $dbItem = Get-ChildItem-Shell $searchF "vocab"
                 }
             }
-            $searchF = if ($vFolder -ne $null) { $vFolder } else { $sysFolder }
-            foreach ($f in $searchF.Items()) {
-                if ($f.Name.ToLower() -eq "vocab.db") {
-                    $vocabDestShell.CopyHere($f, 1556)
-                    for ($i = 0; $i -lt 30; $i++) {
-                        if (Test-Path $vFile) { break }
-                        Start-Sleep -Milliseconds 200
-                    }
-                    break
-                }
+        }
+    }
+
+    if ($dbItem -ne $null -and $vocabDestShell -ne $null) {
+        $vocabDestShell.CopyHere($dbItem, 1556)
+        for ($i = 0; $i -lt 50; $i++) {
+            if (Test-Path $vFile) { break }
+            $extLessV = [System.IO.Path]::Combine($vocabDestDir, "vocab")
+            if (Test-Path $extLessV) {
+                Rename-Item -Path $extLessV -NewName "vocab.db" -Force -ErrorAction SilentlyContinue
+                if (Test-Path $vFile) { break }
             }
+            Start-Sleep -Milliseconds 200
         }
     }
 
@@ -240,6 +266,12 @@ try {
             $nbFolder = $nbItem.GetFolder
             if ($nbFolder -ne $null) {
                 foreach ($nbSub in $nbFolder.Items()) {
+                    $subName = $nbSub.Name
+                    $sLower = $subName.ToLower()
+                    # Skip templates, trash, and ebook annotations
+                    if ($sLower -like "*template*" -or $sLower -eq ".trash" -or $sLower -eq "trash" -or $subName -like "B0*" -or $subName -like "*!!EBOK!!*") {
+                        continue
+                    }
                     # 1556 = 4 (silent) + 16 (no confirm) + 512 (no dir confirm) + 1024 (no error UI)
                     $nbDestShell.CopyHere($nbSub, 1556)
                 }
@@ -268,9 +300,12 @@ try {
                 Get-ChildItem -Path $nbLocalDest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
                     if ($_.Name.ToLower() -eq "nbk") {
                         $uuidName = $_.Directory.Name
-                        $targetPath = [System.IO.Path]::Combine($nbLocalDest, "$uuidName.nbk")
-                        if (-not (Test-Path $targetPath)) {
-                            Copy-Item -Path $_.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+                        $lname = $uuidName.ToLower()
+                        if (-not ($lname -like "*template*" -or $lname -like "*trash*" -or $uuidName -like "B0*" -or $uuidName -like "*!!EBOK!!*")) {
+                            $targetPath = [System.IO.Path]::Combine($nbLocalDest, "$uuidName.nbk")
+                            if (-not (Test-Path $targetPath)) {
+                                Copy-Item -Path $_.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+                            }
                         }
                     }
                 }
