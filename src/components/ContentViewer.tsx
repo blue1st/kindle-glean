@@ -345,8 +345,11 @@ export const ContentViewer: React.FC<Props> = ({
   });
 
   const getSubfolderPath = (folderName: string) => {
-    const base = config.subfolder.trim().length > 0 ? `${config.subfolder}/${folderName}` : folderName;
-    return `${config.vault_path}/${base}`;
+    const isWindows = config.vault_path.includes("\\");
+    const sep = isWindows ? "\\" : "/";
+    const sub = config.subfolder.trim();
+    const base = sub.length > 0 ? `${sub}${sep}${folderName}` : folderName;
+    return `${config.vault_path}${sep}${base}`;
   };
 
   return (

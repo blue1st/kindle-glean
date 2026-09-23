@@ -18,6 +18,7 @@ use sync::SyncOrchestrator;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_opener::OpenerExt;
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -246,7 +247,11 @@ fn eject_device(mount_path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn open_folder(path: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+fn open_folder(
+    path: Option<String>,
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
     let target_path = match path {
         Some(p) => crate::models::resolve_path(&p),
         None => {
@@ -265,28 +270,41 @@ fn open_folder(path: Option<String>, state: State<'_, AppState>) -> Result<(), S
         std::fs::create_dir_all(&target_path).map_err(|e| e.to_string())?;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&target_path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    let target_str = target_path.to_string_lossy().to_string();
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(&target_path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    // Use tauri-plugin-opener (which calls native ShellExecuteW on Windows)
+    if let Err(e) = app_handle.opener().open_path(&target_str, None::<&str>) {
+        log::warn!("opener.open_path failed for '{}': {}. Falling back to OS command.", target_str, e);
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&target_path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(&target_path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let win_path = target_str.replace('/', "\\");
+            let win_path = if !win_path.ends_with('\\') {
+                format!("{}\\", win_path)
+            } else {
+                win_path
+            };
+            std::process::Command::new("explorer")
+                .arg(&win_path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(&target_path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(())

@@ -17,7 +17,7 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { syncNow, onSyncProgress, getDeviceProfile } from "../api";
+import { syncNow, onSyncProgress, getDeviceProfile, openFolder } from "../api";
 import { DeviceSetupModal } from "./DeviceSetupModal";
 
 interface Props {
@@ -203,6 +203,19 @@ export const Dashboard: React.FC<Props> = ({
                   <span className="text-zinc-300 truncate">
                     同期先: {profile ? `${profile.vault_path}${profile.subfolder ? ` / ${profile.subfolder}` : ""}` : config?.vault_path}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const dest = profile
+                        ? (profile.subfolder ? `${profile.vault_path}/${profile.subfolder}` : profile.vault_path)
+                        : (config ? (config.subfolder ? `${config.vault_path}/${config.subfolder}` : config.vault_path) : undefined);
+                      if (dest) openFolder(dest);
+                    }}
+                    title="同期先フォルダをFinder/Explorerで開く"
+                    className="p-1 rounded hover:bg-zinc-800 text-indigo-400 hover:text-indigo-300 transition-colors shrink-0 cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 

@@ -243,7 +243,6 @@ impl DeviceDetector {
             || p.join("My Clippings.txt").exists()
             || p.join("system").join("vocabulary").join("vocab.db").exists()
             || p.join(".notebooks").exists()
-            || p.join("documents").is_dir()
     }
 
     pub fn inspect_kindle_directory<P: AsRef<Path>>(
@@ -353,6 +352,10 @@ mod tests {
 
         let docs_dir = temp_dir.join("documents");
         fs::create_dir_all(&docs_dir).unwrap();
+
+        // A plain "documents" directory without Kindle signature files must NOT be detected as a Kindle!
+        assert!(!DeviceDetector::has_kindle_signatures(&temp_dir));
+
         let clippings_file = docs_dir.join("My Clippings.txt");
         fs::write(&clippings_file, "Sample clipping").unwrap();
 

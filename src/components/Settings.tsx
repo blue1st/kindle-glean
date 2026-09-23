@@ -18,6 +18,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   saveConfig,
+  saveDeviceProfile,
   openFolder,
   reexportAll,
   getAllDeviceProfiles,
@@ -47,6 +48,7 @@ export const Settings: React.FC<Props> = ({
   const [editingProfile, setEditingProfile] = useState<DeviceProfile | null>(null);
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
   const [autostartLoading, setAutostartLoading] = useState<boolean>(false);
+  const [updateProfilesOnSave, setUpdateProfilesOnSave] = useState(true);
 
   const loadProfiles = async () => {
     try {
@@ -122,6 +124,22 @@ export const Settings: React.FC<Props> = ({
     try {
       await saveConfig(formData);
       onConfigUpdated(formData);
+
+      // If user wants to update registered device profiles with the new vault_path
+      if (updateProfilesOnSave && deviceProfiles.length > 0) {
+        for (const p of deviceProfiles) {
+          if (p.vault_path !== formData.vault_path) {
+            const updatedProfile: DeviceProfile = {
+              ...p,
+              vault_path: formData.vault_path,
+              last_connected_at: p.last_connected_at || new Date().toISOString(),
+            };
+            await saveDeviceProfile(updatedProfile);
+          }
+        }
+        await loadProfiles();
+      }
+
       setSavedMessage(true);
       setTimeout(() => setSavedMessage(false), 3000);
     } catch (err) {
@@ -204,13 +222,26 @@ export const Settings: React.FC<Props> = ({
               </button>
               <button
                 type="button"
-                onClick={() => openFolder()}
+                onClick={() => openFolder(formData.vault_path)}
                 title="現在の同期先フォルダをFinder/Explorerで開く"
-                className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-indigo-400 border border-zinc-700/50 transition-colors shrink-0"
+                className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-indigo-400 border border-zinc-700/50 transition-colors shrink-0 cursor-pointer"
               >
                 <ExternalLink className="w-5 h-5" />
               </button>
             </div>
+            {deviceProfiles.length > 0 && (
+              <label className="flex items-center gap-2 mt-2.5 text-xs text-zinc-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={updateProfilesOnSave}
+                  onChange={(e) => setUpdateProfilesOnSave(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-950 cursor-pointer"
+                />
+                <span>
+                  登録済みKindle端末（{deviceProfiles.length}台）の同期先フォルダもこのパスに更新する
+                </span>
+              </label>
+            )}
           </div>
 
           <div>

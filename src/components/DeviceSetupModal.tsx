@@ -11,10 +11,11 @@ import {
   FileText,
   BookOpen,
   Settings,
+  ExternalLink,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { DeviceInfo, DeviceProfile, SyncConfig } from "../types";
-import { saveDeviceProfile, getDeviceProfile } from "../api";
+import { saveDeviceProfile, getDeviceProfile, openFolder } from "../api";
 
 interface DeviceSetupModalProps {
   device: DeviceInfo;
@@ -212,12 +213,29 @@ export const DeviceSetupModal: React.FC<DeviceSetupModalProps> = ({
               <button
                 type="button"
                 onClick={handleSelectFolder}
-                className="px-3.5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-medium rounded-xl border border-zinc-700/60 transition-colors flex items-center gap-1.5 shrink-0"
+                className="px-3.5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-medium rounded-xl border border-zinc-700/60 transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer"
               >
                 <Folder className="w-4 h-4 text-amber-400" />
                 参照
               </button>
+              <button
+                type="button"
+                onClick={() => openFolder(vaultPath)}
+                title="このフォルダをFinder/Explorerで開く"
+                className="p-2.5 bg-zinc-800 hover:bg-zinc-700 text-indigo-400 rounded-xl border border-zinc-700/60 transition-colors shrink-0 cursor-pointer"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </button>
             </div>
+            {vaultPath !== defaultConfig.vault_path && (
+              <button
+                type="button"
+                onClick={() => setVaultPath(defaultConfig.vault_path)}
+                className="mt-1.5 text-xs text-indigo-400 hover:text-indigo-300 hover:underline cursor-pointer flex items-center gap-1"
+              >
+                <span>↩ アプリのデフォルト保存先（{defaultConfig.vault_path}）を使用</span>
+              </button>
+            )}
           </div>
 
           {/* Subfolder */}

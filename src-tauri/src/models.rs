@@ -71,14 +71,53 @@ pub struct SyncConfig {
     pub subfolder: String, // optional subfolder, default empty
 }
 
+fn get_default_documents_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        // Try reading User Shell Folders Personal registry value via reg query
+        // This correctly retrieves relocated documents folders (e.g. D:\user\Documents)
+        if let Ok(output) = std::process::Command::new("reg")
+            .args(["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders", "/v", "Personal"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("Personal") {
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        if parts.len() >= 3 {
+                            let mut path = parts[2..].join(" ");
+                            if path.contains("%USERPROFILE%") {
+                                if let Ok(uprof) = std::env::var("USERPROFILE") {
+                                    path = path.replace("%USERPROFILE%", &uprof);
+                                }
+                            }
+                            let pb = std::path::PathBuf::from(&path);
+                            if pb.exists() {
+                                return Some(pb);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        if let Some(doc_dir) = user_dirs.document_dir() {
+            return Some(doc_dir.to_path_buf());
+        }
+        return Some(user_dirs.home_dir().join("Documents"));
+    }
+
+    None
+}
+
 impl Default for SyncConfig {
     fn default() -> Self {
-        let default_dir = if let Some(user_dirs) = directories::UserDirs::new() {
-            if let Some(doc_dir) = user_dirs.document_dir() {
-                doc_dir.join("KindleGlean")
-            } else {
-                user_dirs.home_dir().join("Documents").join("KindleGlean")
-            }
+        let default_dir = if let Some(doc_dir) = get_default_documents_dir() {
+            doc_dir.join("KindleGlean")
         } else {
             std::path::PathBuf::from("KindleGlean")
         };
@@ -100,17 +139,24 @@ pub fn resolve_path(path: &str) -> std::path::PathBuf {
     if trimmed.is_empty() {
         return SyncConfig::default().vault_path.into();
     }
-    if trimmed == "~" {
+
+    // Normalize Japanese Yen signs (U+00A5 and U+FFE5) to standard path separators
+    let normalized = trimmed.replace('\u{00A5}', "\\").replace('\u{FFE5}', "\\");
+
+    #[cfg(target_os = "windows")]
+    let normalized = normalized.replace('/', "\\");
+
+    if normalized == "~" {
         if let Some(user_dirs) = directories::UserDirs::new() {
             return user_dirs.home_dir().to_path_buf();
         }
-    } else if trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
+    } else if normalized.starts_with("~/") || normalized.starts_with("~\\") {
         if let Some(user_dirs) = directories::UserDirs::new() {
             let home = user_dirs.home_dir();
-            return home.join(&trimmed[2..]);
+            return home.join(&normalized[2..]);
         }
     }
-    std::path::PathBuf::from(trimmed)
+    std::path::PathBuf::from(normalized)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +252,24 @@ mod tests {
         assert_eq!(resolve_path("~/KindleGlean"), home.join("KindleGlean"));
         assert_eq!(resolve_path("~\\KindleGlean"), home.join("KindleGlean"));
         assert_eq!(resolve_path("/tmp/vault"), std::path::PathBuf::from("/tmp/vault"));
+    }
+
+    #[test]
+    fn test_resolve_path_yen_sign_normalization() {
+        // Half-width yen sign \u{00A5} and full-width yen sign \u{FFE5}
+        let yen_path = "D:\u{00A5}user\u{00A5}Documents\u{00A5}KindleGlean";
+        let resolved = resolve_path(yen_path);
+        let s = resolved.to_string_lossy();
+        assert!(!s.contains('\u{00A5}'));
+        assert!(!s.contains('\u{FFE5}'));
+        assert!(s.contains("D:") && s.contains("KindleGlean"));
+
+        let fullwidth_yen_path = "D:\u{FFE5}user\u{FFE5}Documents\u{FFE5}KindleGlean";
+        let resolved_fw = resolve_path(fullwidth_yen_path);
+        let s_fw = resolved_fw.to_string_lossy();
+        assert!(!s_fw.contains('\u{00A5}'));
+        assert!(!s_fw.contains('\u{FFE5}'));
+        assert!(s_fw.contains("D:") && s_fw.contains("KindleGlean"));
     }
 }
 
