@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app-icon.png" width="128" height="128" alt="Kindle Glean" />
+</p>
+
 # Kindle Glean
 
 Kindle端末（Paperwhite、Oasis、Kindle Scribeなど）がPCにUSB接続されたことをトリガーに、読書ハイライト・手書きノート・語彙ログを自動抽出・収集（Glean）し、Obsidian Vault連携を想定したローカルディレクトリへMarkdownおよび画像/SVGアセットとして出力・整理するデスクトップアプリケーションです。
