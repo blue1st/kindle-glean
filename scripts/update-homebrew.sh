@@ -50,10 +50,10 @@ cask "${CASK_NAME}" do
 
   app "Kindle Glean.app"
 
-  postflight_steps do
-    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Kindle Glean.app"]
-    run "/usr/bin/codesign", args: ["--force", "--deep", "--sign", "-", "{{appdir}}/Kindle Glean.app"]
-  end
+  caveats <<~EOS
+    Kindle Glean is not notarized. If macOS blocks it from running, execute:
+      xattr -cr "/Applications/Kindle Glean.app"
+  EOS
 
   zap trash: [
     "~/Library/Application Support/com.kindleglean.app",
