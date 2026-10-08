@@ -163,6 +163,18 @@ impl Database {
             [],
         )?;
 
+        // Transferred files table (push deduplication / audit)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS transferred_files (
+                file_hash TEXT PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                destination TEXT NOT NULL,
+                transferred_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -186,6 +198,11 @@ impl Database {
                 "auto_sync" => config.auto_sync = row.1 == "true",
                 "auto_eject" => config.auto_eject = row.1 == "true",
                 "subfolder" => config.subfolder = row.1,
+                "enable_push" => config.enable_push = row.1 == "true",
+                "hotfolder_path" => config.hotfolder_path = row.1,
+                "hotfolder_dest_subfolder" => config.hotfolder_dest_subfolder = row.1,
+                "push_after_action" => config.push_after_action = row.1,
+                "auto_convert_epub" => config.auto_convert_epub = row.1 == "true",
                 _ => {}
             }
         }
@@ -202,6 +219,11 @@ impl Database {
             ("auto_sync", config.auto_sync.to_string()),
             ("auto_eject", config.auto_eject.to_string()),
             ("subfolder", config.subfolder.clone()),
+            ("enable_push", config.enable_push.to_string()),
+            ("hotfolder_path", config.hotfolder_path.clone()),
+            ("hotfolder_dest_subfolder", config.hotfolder_dest_subfolder.clone()),
+            ("push_after_action", config.push_after_action.clone()),
+            ("auto_convert_epub", config.auto_convert_epub.to_string()),
         ];
 
         for (k, v) in entries {
@@ -211,6 +233,37 @@ impl Database {
                 params![k, v],
             )?;
         }
+        Ok(())
+    }
+
+    // --- Transferred Files Deduplication ---
+    pub fn is_file_transferred(&self, hash: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transferred_files WHERE file_hash = ?1",
+            params![hash],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn mark_file_transferred(
+        &self,
+        hash: &str,
+        file_name: &str,
+        file_size: u64,
+        destination: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO transferred_files (file_hash, file_name, file_size, destination, transferred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(file_hash) DO UPDATE SET
+                file_name = excluded.file_name,
+                transferred_at = excluded.transferred_at",
+            params![hash, file_name, file_size as i64, destination, now],
+        )?;
         Ok(())
     }
 

@@ -7,10 +7,10 @@ pub mod sync;
 pub mod tray;
 
 use db::Database;
-use device::DeviceDetector;
+use device::{DeviceDetector, FilePusher};
 use models::{
-    Clipping, DeviceInfo, DeviceProfile, NotebookSummary, SyncConfig, SyncStats, SyncedCounts,
-    VocabLookup,
+    Clipping, DeviceInfo, DeviceProfile, FileTransferResult, HotfolderStatus, NotebookSummary,
+    SyncConfig, SyncStats, SyncedCounts, VocabLookup,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,7 +113,7 @@ fn sync_now(
                 .ok_or_else(|| "Kindle端末が見つかりませんでした。USB接続を確認してください。".to_string())?;
             let is_mtp = device.connection_mode == "MTP";
 
-            // If a custom profile exists for this device, use its specific destination folder and options
+            let base_config = state.db.get_config().map_err(|e| e.to_string())?;
             let profile_opt = state.db.get_device_profile(&device.device_id).ok().flatten();
             let effective_config = if let Some(p) = profile_opt {
                 device.nickname = Some(p.nickname.clone());
@@ -126,9 +126,10 @@ fn sync_now(
                     sync_notebooks: p.sync_notebooks,
                     auto_sync: p.auto_sync,
                     auto_eject: p.auto_eject,
+                    ..base_config
                 }
             } else {
-                state.db.get_config().map_err(|e| e.to_string())?
+                base_config
             };
 
             let name = device.nickname.unwrap_or(device.device_type);
@@ -195,6 +196,14 @@ fn sync_now(
 
     let result = state.orchestrator.sync_from_path(&actual_sync_path, &effective_config, &device_name, Some(&progress_cb))?;
 
+    // Push hotfolder files to Kindle if enabled before auto-eject
+    if effective_config.enable_push && device_name != "Custom Folder" {
+        if let Some(dev) = DeviceDetector::detect_device() {
+            log::info!("Auto-pushing hotfolder files to Kindle...");
+            let _ = sync_hotfolder_internal(&effective_config, &state.db, &dev, &app_handle);
+        }
+    }
+
     // Emit event to frontend
     let _ = app_handle.emit("sync-completed", &result);
 
@@ -211,6 +220,189 @@ fn sync_now(
     }
 
     Ok(result)
+}
+
+fn push_files_to_kindle_internal(
+    file_paths: &[String],
+    subfolder: &str,
+    config: &SyncConfig,
+    db: &Database,
+    device: &DeviceInfo,
+    app_handle: &AppHandle,
+) -> Result<FileTransferResult, String> {
+    let temp_dir = std::env::temp_dir().join("kindle_convert_temp");
+    let mut valid_paths = Vec::new();
+    let mut failed = Vec::new();
+
+    for p_str in file_paths {
+        let p = std::path::PathBuf::from(p_str);
+        if !p.exists() {
+            failed.push((p_str.clone(), "ファイルが存在しません".to_string()));
+            continue;
+        }
+
+        if FilePusher::is_epub(&p) {
+            if config.auto_convert_epub {
+                match FilePusher::convert_epub_to_azw3(&p, &temp_dir) {
+                    Ok(converted) => valid_paths.push(converted),
+                    Err(e) => failed.push((p_str.clone(), e)),
+                }
+            } else {
+                failed.push((
+                    p_str.clone(),
+                    "EPUB形式はKindle直入れ非対応です。Calibre等でAZW3/KFXに変換するか、Send to Kindleをご利用ください。設定で「EPUB自動変換」を有効にすることも可能です。".to_string(),
+                ));
+            }
+        } else if FilePusher::is_supported(&p) {
+            valid_paths.push(p);
+        } else {
+            failed.push((
+                p_str.clone(),
+                "未対応のファイル形式です（対応形式: PDF, KFX, AZW3, AZW, MOBI, PRC, TXT）".to_string(),
+            ));
+        }
+    }
+
+    if valid_paths.is_empty() {
+        return Ok(FileTransferResult {
+            success: false,
+            transferred_count: 0,
+            skipped_count: 0,
+            failed_files: failed,
+            message: "転送可能なファイルがありませんでした".to_string(),
+        });
+    }
+
+    let is_mtp = device.connection_mode == "MTP";
+    let mut res = if is_mtp {
+        #[cfg(target_os = "windows")]
+        {
+            FilePusher::push_files_windows_mtp(&valid_paths, subfolder, db)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            FilePusher::push_files_usb_mtp(&valid_paths, subfolder, db)
+        }
+    } else {
+        let mount_p = std::path::PathBuf::from(&device.mount_path);
+        FilePusher::push_files_ums(&valid_paths, &mount_p, subfolder, db)
+    };
+
+    res.failed_files.extend(failed);
+    if !res.failed_files.is_empty() {
+        res.success = res.transferred_count > 0;
+    }
+
+    if res.transferred_count > 0 {
+        let _ = app_handle.notification()
+            .builder()
+            .title("Kindle Glean - ファイル転送完了")
+            .body(&res.message)
+            .show();
+    }
+
+    Ok(res)
+}
+
+fn sync_hotfolder_internal(
+    config: &SyncConfig,
+    db: &Database,
+    device: &DeviceInfo,
+    app_handle: &AppHandle,
+) -> Result<FileTransferResult, String> {
+    let hotfolder = crate::models::resolve_path(&config.hotfolder_path);
+    if !hotfolder.exists() {
+        return Ok(FileTransferResult {
+            success: false,
+            transferred_count: 0,
+            skipped_count: 0,
+            failed_files: vec![(config.hotfolder_path.clone(), "ホットフォルダが存在しません".to_string())],
+            message: "ホットフォルダが存在しません".to_string(),
+        });
+    }
+
+    let pending = FilePusher::scan_hotfolder(&hotfolder, db).map_err(|e| e.to_string())?;
+    if pending.is_empty() {
+        return Ok(FileTransferResult {
+            success: true,
+            transferred_count: 0,
+            skipped_count: 0,
+            failed_files: Vec::new(),
+            message: "ホットフォルダ内に未転送のファイルはありません".to_string(),
+        });
+    }
+
+    let file_paths: Vec<String> = pending.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let res = push_files_to_kindle_internal(
+        &file_paths,
+        &config.hotfolder_dest_subfolder,
+        config,
+        db,
+        device,
+        app_handle,
+    )?;
+
+    if res.transferred_count > 0 && config.push_after_action == "move_synced" {
+        for p in pending {
+            if let Ok(hash) = FilePusher::compute_file_hash(&p) {
+                if let Ok(true) = db.is_file_transferred(&hash) {
+                    let _ = FilePusher::handle_post_transfer(&p, &hotfolder, &config.push_after_action);
+                }
+            }
+        }
+    }
+
+    Ok(res)
+}
+
+#[tauri::command]
+fn push_files_to_kindle(
+    file_paths: Vec<String>,
+    subfolder: Option<String>,
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<FileTransferResult, String> {
+    let device = DeviceDetector::detect_device()
+        .ok_or_else(|| "Kindle端末が接続されていません。USB接続を確認してください。".to_string())?;
+    let config = state.db.get_config().map_err(|e| e.to_string())?;
+    let sub = subfolder.unwrap_or_default();
+    push_files_to_kindle_internal(&file_paths, &sub, &config, &state.db, &device, &app_handle)
+}
+
+#[tauri::command]
+fn get_hotfolder_status(state: State<'_, AppState>) -> Result<HotfolderStatus, String> {
+    let config = state.db.get_config().map_err(|e| e.to_string())?;
+    let path = crate::models::resolve_path(&config.hotfolder_path);
+    let exists = path.exists();
+    let pending = if exists {
+        FilePusher::scan_hotfolder(&path, &state.db).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let pending_names: Vec<String> = pending
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+        .collect();
+
+    Ok(HotfolderStatus {
+        enabled: config.enable_push,
+        folder_path: config.hotfolder_path,
+        exists,
+        pending_files_count: pending_names.len(),
+        pending_files: pending_names,
+    })
+}
+
+#[tauri::command]
+fn sync_hotfolder(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<FileTransferResult, String> {
+    let device = DeviceDetector::detect_device()
+        .ok_or_else(|| "Kindle端末が接続されていません。USB接続を確認してください。".to_string())?;
+    let config = state.db.get_config().map_err(|e| e.to_string())?;
+    sync_hotfolder_internal(&config, &state.db, &device, &app_handle)
 }
 
 #[tauri::command]
@@ -593,6 +785,7 @@ fn start_device_watcher(app_handle: AppHandle, db: Arc<Database>, sync_lock: Arc
                         None => db.get_config().map(|c| c.auto_sync).unwrap_or(false),
                     };
 
+                    let base = db.get_config().unwrap_or_default();
                     let sync_config = match &profile_opt {
                         Some(p) => SyncConfig {
                             vault_path: p.vault_path.clone(),
@@ -602,8 +795,9 @@ fn start_device_watcher(app_handle: AppHandle, db: Arc<Database>, sync_lock: Arc
                             sync_notebooks: p.sync_notebooks,
                             auto_sync: p.auto_sync,
                             auto_eject: p.auto_eject,
+                            ..base
                         },
-                        None => db.get_config().unwrap_or_default(),
+                        None => base,
                     };
 
                     if should_auto_sync {
@@ -672,6 +866,11 @@ fn start_device_watcher(app_handle: AppHandle, db: Arc<Database>, sync_lock: Arc
                                         .title("Kindle Glean")
                                         .body(&stats.message)
                                         .show();
+
+                                    if sync_config.enable_push {
+                                        log::info!("Watcher: Auto-pushing hotfolder files to Kindle...");
+                                        let _ = sync_hotfolder_internal(&sync_config, &db, &device, &app_handle);
+                                    }
                                 }
                             }
                         }
@@ -765,6 +964,9 @@ pub fn run() {
             reexport_all,
             get_autostart_status,
             set_autostart,
+            push_files_to_kindle,
+            get_hotfolder_status,
+            sync_hotfolder,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

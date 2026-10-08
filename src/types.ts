@@ -41,6 +41,27 @@ export interface SyncConfig {
   auto_sync: boolean;
   auto_eject: boolean;
   subfolder: string;
+  enable_push?: boolean;
+  hotfolder_path?: string;
+  hotfolder_dest_subfolder?: string;
+  push_after_action?: "record_db" | "move_synced" | string;
+  auto_convert_epub?: boolean;
+}
+
+export interface FileTransferResult {
+  success: boolean;
+  transferred_count: number;
+  skipped_count: number;
+  failed_files: [string, string][];
+  message: string;
+}
+
+export interface HotfolderStatus {
+  enabled: boolean;
+  folder_path: string;
+  exists: boolean;
+  pending_files_count: number;
+  pending_files: string[];
 }
 
 export interface SyncStats {

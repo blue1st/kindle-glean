@@ -490,6 +490,7 @@ Essential advice for all developers!
             auto_sync: true,
             auto_eject: false,
             subfolder: "Kindle".to_string(),
+            ..SyncConfig::default()
         };
 
         // First Sync

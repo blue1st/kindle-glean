@@ -1,5 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
-import { DeviceInfo, SyncStats, SyncProgress, SyncConfig, DeviceProfile, SyncedCounts } from "../types";
+import {
+  DeviceInfo,
+  SyncStats,
+  SyncProgress,
+  SyncConfig,
+  DeviceProfile,
+  SyncedCounts,
+  FileTransferResult,
+  HotfolderStatus,
+} from "../types";
 import {
   HardDrive,
   RefreshCw,
@@ -15,9 +24,23 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
+  UploadCloud,
+  FileUp,
+  X,
+  File,
+  ArrowUpRight,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { syncNow, onSyncProgress, getDeviceProfile, openFolder } from "../api";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  syncNow,
+  onSyncProgress,
+  getDeviceProfile,
+  openFolder,
+  pushFilesToKindle,
+  getHotfolderStatus,
+  syncHotfolder,
+} from "../api";
 import { DeviceSetupModal } from "./DeviceSetupModal";
 
 interface Props {
@@ -46,6 +69,127 @@ export const Dashboard: React.FC<Props> = ({
   const [profile, setProfile] = useState<DeviceProfile | null>(null);
   const isSyncingRef = useRef(false);
   const hasAutoPromptedRef = useRef<string | null>(null);
+
+  // File Transfer States
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [transferSubfolder, setTransferSubfolder] = useState<string>("");
+  const [transferring, setTransferring] = useState<boolean>(false);
+  const [transferResult, setTransferResult] = useState<FileTransferResult | null>(null);
+  const [hotfolderStatus, setHotfolderStatus] = useState<HotfolderStatus | null>(null);
+  const [syncingHotfolder, setSyncingHotfolder] = useState<boolean>(false);
+  const [isDraggingOver, setIsDraggingOver] = useState<boolean>(false);
+
+  const loadHotfolder = () => {
+    getHotfolderStatus()
+      .then(setHotfolderStatus)
+      .catch((e) => console.error("Failed to load hotfolder status:", e));
+  };
+
+  useEffect(() => {
+    loadHotfolder();
+  }, [config]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    try {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setIsDraggingOver(true);
+          } else if (event.payload.type === "drop") {
+            setIsDraggingOver(false);
+            const paths = event.payload.paths;
+            if (paths && paths.length > 0) {
+              setSelectedFiles((prev) => Array.from(new Set([...prev, ...paths])));
+              setTransferResult(null);
+            }
+          } else {
+            setIsDraggingOver(false);
+          }
+        })
+        .then((fn) => {
+          unlisten = fn;
+        })
+        .catch(() => {});
+    } catch (_) {}
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handlePickFiles = async () => {
+    try {
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        title: "Kindleへ転送するファイルを選択",
+        filters: [
+          {
+            name: "電子書籍 / ドキュメント",
+            extensions: ["pdf", "kfx", "azw3", "azw", "mobi", "prc", "txt", "epub"],
+          },
+          { name: "すべてのファイル", extensions: ["*"] },
+        ],
+      });
+      if (selected) {
+        const newPaths = Array.isArray(selected) ? selected : [selected];
+        setSelectedFiles((prev) => Array.from(new Set([...prev, ...newPaths])));
+        setTransferResult(null);
+      }
+    } catch (err) {
+      console.error("File selection failed:", err);
+    }
+  };
+
+  const handleRemoveFile = (pathToRemove: string) => {
+    setSelectedFiles((prev) => prev.filter((p) => p !== pathToRemove));
+    setTransferResult(null);
+  };
+
+  const handleTransferFiles = async () => {
+    if (selectedFiles.length === 0 || transferring) return;
+    setTransferring(true);
+    setTransferResult(null);
+    try {
+      const res = await pushFilesToKindle(selectedFiles, transferSubfolder);
+      setTransferResult(res);
+      if (res.transferred_count > 0) {
+        setSelectedFiles([]);
+        loadHotfolder();
+      }
+    } catch (err: any) {
+      setTransferResult({
+        success: false,
+        transferred_count: 0,
+        skipped_count: 0,
+        failed_files: [["転送処理", typeof err === "string" ? err : err.message || "エラーが発生しました"]],
+        message: typeof err === "string" ? err : err.message || "転送エラーが発生しました",
+      });
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  const handleSyncHotfolderNow = async () => {
+    if (syncingHotfolder) return;
+    setSyncingHotfolder(true);
+    try {
+      const res = await syncHotfolder();
+      setTransferResult(res);
+      loadHotfolder();
+    } catch (err: any) {
+      setTransferResult({
+        success: false,
+        transferred_count: 0,
+        skipped_count: 0,
+        failed_files: [["ホットフォルダ", typeof err === "string" ? err : err.message || "エラーが発生しました"]],
+        message: typeof err === "string" ? err : err.message || "ホットフォルダ同期エラー",
+      });
+    } finally {
+      setSyncingHotfolder(false);
+    }
+  };
 
   useEffect(() => {
     if (device?.connected && device.device_id) {
@@ -506,6 +650,247 @@ export const Dashboard: React.FC<Props> = ({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Push to Kindle / Local File Transfer Section */}
+      <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400">
+              <UploadCloud className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold text-zinc-100">Kindleへのファイル転送</h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 font-medium">
+                  Push to Kindle
+                </span>
+              </div>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                ローカルのPDFや書籍ファイルをKindleの <code className="text-zinc-300 font-mono">documents/</code> へ直接プッシュ転送します
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {device?.connected ? (
+              <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                {device.nickname || device.device_type} 接続中
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-zinc-800/80 text-zinc-400 border border-zinc-700/50">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+                Kindle未接続 (USB接続時に転送可能)
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Hotfolder Banner if configured */}
+        {hotfolderStatus && (
+          <div className="mb-4 p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Folder className="w-4 h-4 text-indigo-400 shrink-0" />
+              <div className="text-xs">
+                <span className="text-zinc-400">ホットフォルダ: </span>
+                <span className="text-zinc-200 font-mono font-medium">{hotfolderStatus.folder_path}</span>
+                <span className="ml-2 px-2 py-0.5 rounded text-[11px] bg-zinc-800 text-zinc-300 border border-zinc-700/60">
+                  未転送: <strong className="text-indigo-300">{hotfolderStatus.pending_files_count}</strong> 件
+                </span>
+              </div>
+            </div>
+
+            {hotfolderStatus.pending_files_count > 0 && device?.connected && (
+              <button
+                type="button"
+                onClick={handleSyncHotfolderNow}
+                disabled={syncingHotfolder || !device?.connected}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-medium transition-all shadow-sm flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+              >
+                {syncingHotfolder ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>転送中...</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                    <span>ホットフォルダを今すぐプッシュ</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Drag & Drop Zone */}
+        <div
+          onClick={handlePickFiles}
+          className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer group select-none ${
+            isDraggingOver
+              ? "border-indigo-500 bg-indigo-500/10 scale-[1.01]"
+              : "border-zinc-700/60 hover:border-indigo-500/50 bg-zinc-950/40 hover:bg-zinc-900/40"
+          }`}
+        >
+          <div className="w-12 h-12 rounded-2xl bg-zinc-800/80 group-hover:bg-indigo-500/20 text-zinc-400 group-hover:text-indigo-300 flex items-center justify-center mx-auto mb-3 transition-colors">
+            <FileUp className="w-6 h-6" />
+          </div>
+          <div className="text-sm font-medium text-zinc-200 group-hover:text-indigo-200 transition-colors">
+            ここにファイルをドラッグ＆ドロップ、またはクリックして選択
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">
+            対応形式: <strong className="text-zinc-400">PDF, KFX, AZW3, AZW, MOBI, TXT</strong>（EPUBはCalibre自動変換時のみ）
+          </p>
+        </div>
+
+        {/* Selected Files List */}
+        {selectedFiles.length > 0 && (
+          <div className="mt-4 space-y-3">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span>転送対象ファイル ({selectedFiles.length} 件):</span>
+              <button
+                type="button"
+                onClick={() => setSelectedFiles([])}
+                className="text-zinc-500 hover:text-rose-400 transition-colors"
+              >
+                クリア
+              </button>
+            </div>
+
+            <div className="max-h-44 overflow-y-auto space-y-2 pr-1">
+              {selectedFiles.map((filePath) => {
+                const fileName = filePath.split(/[/\\]/).pop() || filePath;
+                const ext = fileName.split(".").pop()?.toLowerCase() || "";
+                const isEpub = ext === "epub";
+                const isPdf = ext === "pdf";
+                const isScribe = device?.device_type?.includes("Scribe") || device?.connection_mode === "MTP";
+
+                return (
+                  <div
+                    key={filePath}
+                    className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800/80 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <File className="w-4 h-4 text-indigo-400 shrink-0" />
+                      <div className="truncate">
+                        <span className="text-zinc-200 font-medium truncate block">{fileName}</span>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 uppercase font-mono">
+                            .{ext}
+                          </span>
+                          {isEpub && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              ⚠️ EPUBは直入れ非対応 (Calibre設定で自動変換)
+                            </span>
+                          )}
+                          {isPdf && isScribe && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700/50">
+                              ℹ️ Scribe: 閲覧専用 (手書き不可)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFile(filePath)}
+                      className="p-1 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+                      title="削除"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Subfolder and Transfer Action Bar */}
+            <div className="pt-3 border-t border-zinc-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-1 max-w-sm">
+                <span className="text-xs text-zinc-400 whitespace-nowrap font-mono">documents/</span>
+                <input
+                  type="text"
+                  value={transferSubfolder}
+                  onChange={(e) => setTransferSubfolder(e.target.value)}
+                  placeholder="サブフォルダ名 (省略可: Tech など)"
+                  className="w-full px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-700/60 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={handlePickFiles}
+                  className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium border border-zinc-700/50 transition-colors"
+                >
+                  ファイルを追加
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTransferFiles}
+                  disabled={transferring || !device?.connected}
+                  className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-semibold shadow-md shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none flex items-center gap-1.5"
+                >
+                  {transferring ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>転送中...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span>Kindleへ転送する</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Transfer Result Banner */}
+        {transferResult && (
+          <div
+            className={`mt-4 p-3.5 rounded-xl border text-xs flex flex-col gap-2 ${
+              transferResult.success
+                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                : "bg-rose-500/10 border-rose-500/30 text-rose-300"
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-medium">
+                {transferResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                )}
+                <span>{transferResult.message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTransferResult(null)}
+                className="text-zinc-500 hover:text-zinc-300"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {transferResult.failed_files && transferResult.failed_files.length > 0 && (
+              <div className="pl-6 space-y-1 text-[11px] text-rose-300/90">
+                <span className="font-semibold">転送に失敗したファイル:</span>
+                <ul className="list-disc list-inside space-y-0.5">
+                  {transferResult.failed_files.map(([fname, err], i) => (
+                    <li key={i}>
+                      <span className="font-mono text-zinc-200">{fname}</span>: {err}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Sync History Table */}

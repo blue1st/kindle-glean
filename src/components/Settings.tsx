@@ -14,6 +14,7 @@ import {
   Trash2,
   Edit3,
   FolderOpen,
+  UploadCloud,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -112,6 +113,22 @@ export const Settings: React.FC<Props> = ({
       });
       if (selected && typeof selected === "string") {
         setFormData((prev) => ({ ...prev, vault_path: selected }));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handlePickHotfolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: formData.hotfolder_path || undefined,
+        title: "転送用ホットフォルダを選択",
+      });
+      if (selected && typeof selected === "string") {
+        setFormData((prev) => ({ ...prev, hotfolder_path: selected }));
       }
     } catch (e) {
       console.error(e);
@@ -407,6 +424,149 @@ export const Settings: React.FC<Props> = ({
               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 accent-indigo-600 disabled:opacity-50"
             />
           </label>
+        </div>
+      </div>
+
+      {/* Push to Kindle / Hotfolder Settings */}
+      <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400">
+            <UploadCloud className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-zinc-100">
+              Kindleへのファイル転送（Push to Kindle）
+            </h3>
+            <p className="text-xs text-zinc-400">
+              PC上のホットフォルダ（Drop Zone）に置いたPDFや書籍を、USB接続時や同期実行時にKindleの documents/ へ自動プッシュ転送します
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <label className="flex items-center justify-between p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 transition-colors cursor-pointer">
+            <div>
+              <div className="text-sm font-medium text-zinc-200">
+                USB接続時にホットフォルダから自動転送する
+              </div>
+              <div className="text-xs text-zinc-400">
+                Kindleが接続された瞬間に、指定フォルダ内の未転送ファイルをKindleへプッシュします
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={formData.enable_push || false}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, enable_push: e.target.checked }))
+              }
+              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 accent-indigo-600"
+            />
+          </label>
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+              転送元ホットフォルダ（Drop Zone）
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={formData.hotfolder_path || ""}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, hotfolder_path: e.target.value }))
+                }
+                className="flex-1 px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700/60 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 font-mono"
+                placeholder="~/KindleDrop"
+              />
+              <button
+                type="button"
+                onClick={handlePickHotfolder}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-medium border border-zinc-700/50 transition-colors shrink-0"
+              >
+                フォルダ選択
+              </button>
+              <button
+                type="button"
+                onClick={() => openFolder(formData.hotfolder_path)}
+                title="ホットフォルダをFinder/Explorerで開く"
+                className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-indigo-400 border border-zinc-700/50 transition-colors shrink-0 cursor-pointer"
+              >
+                <ExternalLink className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mt-1">
+              Kindleで読みたい論文PDFや技術書をこのフォルダに入れておくだけで、接続時に自動で端末へ転送されます。
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                Kindle内の配置先サブフォルダ (省略可)
+              </label>
+              <input
+                type="text"
+                value={formData.hotfolder_dest_subfolder || ""}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, hotfolder_dest_subfolder: e.target.value }))
+                }
+                className="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700/60 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500"
+                placeholder="(空欄で documents/ 直下、または Tech など)"
+              />
+              <p className="text-[11px] text-zinc-500 mt-1">
+                Kindle端末の documents/ 配下にサブフォルダを作成してファイルを整理できます。
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                転送完了後の処理
+              </label>
+              <select
+                value={formData.push_after_action || "record_db"}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, push_after_action: e.target.value }))
+                }
+                className="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700/60 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="record_db">履歴をDB記録して重複防止（ファイルは移動しない）</option>
+                <option value="move_synced">転送完了フォルダ（synced/）へ自動移動する</option>
+              </select>
+              <p className="text-[11px] text-zinc-500 mt-1">
+                どちらの方式でもSHA-256ハッシュにより同一ファイルの重複転送は自動防止されます。
+              </p>
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 transition-colors cursor-pointer">
+            <div>
+              <div className="text-sm font-medium text-zinc-200">
+                EPUBファイルの自動変換（Calibre連携）
+              </div>
+              <div className="text-xs text-zinc-400">
+                Calibre（ebook-convert）がPCにある場合、直入れ非対応のEPUBを自動でAZW3形式に変換して転送します
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={formData.auto_convert_epub || false}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, auto_convert_epub: e.target.checked }))
+              }
+              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 accent-indigo-600"
+            />
+          </label>
+
+          <div className="p-3.5 rounded-xl bg-zinc-950/80 border border-indigo-900/40 text-xs text-zinc-400 space-y-1.5">
+            <div className="text-indigo-400 font-semibold flex items-center gap-1.5">
+              <span>💡</span>
+              <span>フォーマットと端末の仕様について</span>
+            </div>
+            <ul className="list-disc list-inside space-y-1 text-zinc-400 text-[11px] pl-1">
+              <li><strong className="text-zinc-300">対応形式:</strong> PDF, KFX, AZW3, AZW, MOBI, PRC, TXT</li>
+              <li><strong className="text-zinc-300">EPUB:</strong> KindleのUSB直入れは非対応です（Send to Kindle経由またはCalibreでAZW3等に変換が必要）。</li>
+              <li><strong className="text-zinc-300">Scribeの手書き機能:</strong> USB直入れしたPDFは「閲覧専用」となり、スタイラスペンによる直接手書きはできません（手書きメモにはAmazonのPrint Replica形式が必要です）。</li>
+            </ul>
+          </div>
         </div>
       </div>
 

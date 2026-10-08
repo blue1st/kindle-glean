@@ -37,6 +37,14 @@ Kindle端末（Paperwhite、Oasis、Kindle Scribeなど）がPCにUSB接続さ�
    - `My Clippings.txt` を開いて書籍や種別（ハイライト/メモ/しおり）で全文検索できるプレビュービューア。
    - 実機がなくてもテストできる「フォルダ指定同期」機能。
 
+6. **Kindleへのローカルファイル転送（Push to Kindle）**
+   - PDF、KFX、AZW3、MOBI等のローカルドキュメントを接続中Kindleの `documents/` へ直接プッシュ転送。
+   - ダッシュボードでの直感的なドラッグ＆ドロップおよびファイル選択に対応。
+   - ホットフォルダ（Drop Zone: `~/KindleDrop`）監視による、USB接続時の自動プッシュ同期。
+   - Paperwhite（UMS）および Kindle Scribe（MTP）のハイブリッド転送対応。
+   - SHA-256ハッシュによる重複転送防止と、転送完了ファイルの `synced/` 自動移動オプション。
+   - 直入れ非対応のEPUB形式に対するアラートおよびCalibre（`ebook-convert`）自動変換連携。
+
 ---
 
 ## 📂 出力ディレクトリ構造（Obsidianフレンドリー設計）

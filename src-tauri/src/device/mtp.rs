@@ -854,13 +854,336 @@ try {
                 }
             } else if container_type == 3 {
                 resp_code = op_or_code;
-                break;
+                let mut resp_params = Vec::new();
+                let param_count = (container_len.saturating_sub(12)) / 4;
+                for i in 0..param_count {
+                    let p_offset = 12 + i * 4;
+                    if p_offset + 4 <= n {
+                        resp_params.push(u32::from_le_bytes(buf[p_offset..p_offset + 4].try_into().unwrap()));
+                    }
+                }
+                return Ok(MtpResponse {
+                    code: resp_code,
+                    data: data_payload,
+                    params: resp_params,
+                });
+            }
+        }
+    }
+
+    /// Transacts a command with an outgoing data payload (e.g. SendObjectInfo, SendObject)
+    fn transact_write(
+        handle: &mut DeviceHandle<Context>,
+        code: u16,
+        tx_id: u32,
+        params: &[u32],
+        data: &[u8],
+    ) -> Result<MtpResponse, String> {
+        let ep_out = 0x01;
+        let ep_in = 0x81;
+
+        // 1. Send Command container
+        let cmd_len = (12 + params.len() * 4) as u32;
+        let mut cmd = Vec::with_capacity(cmd_len as usize);
+        cmd.extend_from_slice(&cmd_len.to_le_bytes());
+        cmd.extend_from_slice(&1u16.to_le_bytes()); // 1 = Command
+        cmd.extend_from_slice(&code.to_le_bytes());
+        cmd.extend_from_slice(&tx_id.to_le_bytes());
+        for p in params {
+            cmd.extend_from_slice(&p.to_le_bytes());
+        }
+
+        handle
+            .write_bulk(ep_out, &cmd, Duration::from_secs(3))
+            .map_err(|e| format!("write_bulk (cmd): {}", e))?;
+
+        // 2. Send Data container
+        let total_data_len = (12 + data.len()) as u32;
+        let mut data_header = Vec::with_capacity(12);
+        data_header.extend_from_slice(&total_data_len.to_le_bytes());
+        data_header.extend_from_slice(&2u16.to_le_bytes()); // 2 = Data
+        data_header.extend_from_slice(&code.to_le_bytes());
+        data_header.extend_from_slice(&tx_id.to_le_bytes());
+
+        // Send first chunk (header + initial data)
+        let first_chunk_size = (16384 - 12).min(data.len());
+        let mut first_packet = Vec::with_capacity(12 + first_chunk_size);
+        first_packet.extend_from_slice(&data_header);
+        first_packet.extend_from_slice(&data[..first_chunk_size]);
+
+        handle
+            .write_bulk(ep_out, &first_packet, Duration::from_secs(5))
+            .map_err(|e| format!("write_bulk (data header): {}", e))?;
+
+        // Send remaining chunks
+        let mut sent = first_chunk_size;
+        while sent < data.len() {
+            let chunk_size = 65536.min(data.len() - sent);
+            handle
+                .write_bulk(ep_out, &data[sent..sent + chunk_size], Duration::from_secs(10))
+                .map_err(|e| format!("write_bulk (data chunk): {}", e))?;
+            sent += chunk_size;
+        }
+
+        // 3. Read Response container
+        let mut buf = vec![0u8; 1024];
+        let n = handle
+            .read_bulk(ep_in, &mut buf, Duration::from_secs(10))
+            .map_err(|e| format!("read_bulk (response): {}", e))?;
+
+        if n < 12 {
+            return Err("MTPレスポンスサイズが不正です".to_string());
+        }
+
+        let container_len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+        let resp_code = u16::from_le_bytes(buf[6..8].try_into().unwrap());
+        let mut resp_params = Vec::new();
+        let param_count = (container_len.saturating_sub(12)) / 4;
+        for i in 0..param_count {
+            let p_offset = 12 + i * 4;
+            if p_offset + 4 <= n {
+                resp_params.push(u32::from_le_bytes(buf[p_offset..p_offset + 4].try_into().unwrap()));
             }
         }
 
         Ok(MtpResponse {
             code: resp_code,
-            data: data_payload,
+            data: Vec::new(),
+            params: resp_params,
+        })
+    }
+
+    /// Encode a string into PTP format (length in u16 chars + UTF-16LE characters with null terminator)
+    fn encode_string(s: &str) -> Vec<u8> {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let num_chars = (utf16.len() + 1) as u8; // Includes null terminator
+        let mut bytes = Vec::with_capacity(1 + (num_chars as usize) * 2);
+        bytes.push(num_chars);
+        for ch in utf16 {
+            bytes.extend_from_slice(&ch.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // Null terminator
+        bytes
+    }
+
+    /// Push local files to Kindle Scribe via direct USB / rusb MTP (macOS / Linux)
+    pub fn push_files(
+        files: &[PathBuf],
+        subfolder: &str,
+        db: &crate::db::Database,
+    ) -> Result<crate::models::FileTransferResult, String> {
+        let context = Context::new().map_err(|e| format!("rusb context error: {}", e))?;
+        let devices = context.devices().map_err(|e| format!("rusb devices error: {}", e))?;
+
+        let mut scribe_dev = None;
+        for dev in devices.iter() {
+            if let Ok(desc) = dev.device_descriptor() {
+                if desc.vendor_id() == Self::SCRIBE_VID && desc.product_id() == Self::SCRIBE_PID {
+                    scribe_dev = Some(dev);
+                    break;
+                }
+            }
+        }
+
+        let dev = scribe_dev.ok_or_else(|| "Kindle Scribe がUSB接続されていません".to_string())?;
+        let mut handle = dev.open().map_err(|e| {
+            format!("Kindle を開けませんでした: {}. ロックを解除して再試行してください。", e)
+        })?;
+
+        if handle.kernel_driver_active(0).unwrap_or(false) {
+            handle.detach_kernel_driver(0).ok();
+        }
+
+        let mut claimed = false;
+        let mut last_err = String::new();
+        for _ in 0..6 {
+            match handle.claim_interface(0) {
+                Ok(_) => {
+                    claimed = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
+
+        if !claimed {
+            return Err(format!("USBインターフェースの専有に失敗しました: {}. 端末のロックを解除してください。", last_err));
+        }
+
+        let result = Self::do_push(&mut handle, files, subfolder, db);
+        handle.release_interface(0).ok();
+        result
+    }
+
+    fn do_push(
+        handle: &mut DeviceHandle<Context>,
+        files: &[PathBuf],
+        _subfolder: &str,
+        db: &crate::db::Database,
+    ) -> Result<crate::models::FileTransferResult, String> {
+        // Reset device
+        let _ = handle.write_control(0x21, 0x66, 0, 0, &[], Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = handle.clear_halt(0x01);
+        let _ = handle.clear_halt(0x81);
+
+        // OpenSession
+        let _ = Self::transact(handle, 0x1002, 0, &[1]);
+
+        let mut tx_id = 1;
+        let storages_res = Self::transact(handle, 0x1004, tx_id, &[])?;
+        tx_id += 1;
+
+        let sid = if storages_res.data.len() >= 8 {
+            u32::from_le_bytes(storages_res.data[4..8].try_into().unwrap())
+        } else {
+            0x00010001
+        };
+
+        // Find "documents" folder handle
+        let handles_res = Self::transact(handle, 0x1007, tx_id, &[sid, 0, 0])?;
+        tx_id += 1;
+
+        let mut documents_handle = 0u32;
+        if handles_res.data.len() >= 4 {
+            let count = u32::from_le_bytes(handles_res.data[0..4].try_into().unwrap()) as usize;
+            for i in 0..count {
+                let idx = 4 + i * 4;
+                if idx + 4 <= handles_res.data.len() {
+                    let h = u32::from_le_bytes(handles_res.data[idx..idx + 4].try_into().unwrap());
+                    if let Ok(info) = Self::get_object_info(handle, h, &mut tx_id) {
+                        if info.is_folder && info.filename.eq_ignore_ascii_case("documents") {
+                            documents_handle = h;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut transferred = 0;
+        let mut skipped = 0;
+        let mut failed = Vec::new();
+
+        for file_path in files {
+            let filename = match file_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => {
+                    failed.push((file_path.display().to_string(), "無効なファイル名です".to_string()));
+                    continue;
+                }
+            };
+
+            let hash = match crate::device::push::FilePusher::compute_file_hash(file_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    failed.push((filename, e));
+                    continue;
+                }
+            };
+
+            if let Ok(true) = db.is_file_transferred(&hash) {
+                skipped += 1;
+                continue;
+            }
+
+            let file_data = match fs::read(file_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    failed.push((filename, format!("ファイル読み込み失敗: {}", e)));
+                    continue;
+                }
+            };
+
+            // Build ObjectInfo dataset for SendObjectInfo
+            let mut obj_info = Vec::new();
+            obj_info.extend_from_slice(&sid.to_le_bytes()); // StorageID (4)
+            obj_info.extend_from_slice(&0x3000u16.to_le_bytes()); // ObjectFormat = Undefined (2)
+            obj_info.extend_from_slice(&0u16.to_le_bytes()); // ProtectionStatus (2)
+            obj_info.extend_from_slice(&(file_data.len() as u32).to_le_bytes()); // ObjectCompressedSize (4)
+            obj_info.extend_from_slice(&0u16.to_le_bytes()); // ThumbFormat (2)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ThumbCompressedSize (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ThumbPixWidth (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ThumbPixHeight (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ImagePixWidth (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ImagePixHeight (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // ImageBitDepth (4)
+            obj_info.extend_from_slice(&documents_handle.to_le_bytes()); // ParentObject (4)
+            obj_info.extend_from_slice(&0u16.to_le_bytes()); // AssociationType (2)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // AssociationDesc (4)
+            obj_info.extend_from_slice(&0u32.to_le_bytes()); // SequenceNumber (4)
+            obj_info.extend_from_slice(&Self::encode_string(&filename)); // Filename
+            obj_info.push(0); // DateCreated empty string
+            obj_info.push(0); // DateModified empty string
+            obj_info.push(0); // Keywords empty string
+
+            // 1. SendObjectInfo (0x100C)
+            let send_info_res = Self::transact_write(
+                handle,
+                0x100C,
+                tx_id,
+                &[sid, documents_handle],
+                &obj_info,
+            );
+            tx_id += 1;
+
+            match send_info_res {
+                Ok(resp) if resp.code == 0x2001 => {
+                    // 2. SendObject (0x100D)
+                    let send_obj_res = Self::transact_write(
+                        handle,
+                        0x100D,
+                        tx_id,
+                        &[],
+                        &file_data,
+                    );
+                    tx_id += 1;
+
+                    match send_obj_res {
+                        Ok(obj_resp) if obj_resp.code == 0x2001 => {
+                            let _ = db.mark_file_transferred(&hash, &filename, file_data.len() as u64, "MTP:documents");
+                            transferred += 1;
+                        }
+                        Ok(obj_resp) => {
+                            failed.push((filename, format!("SendObject 応答エラー: 0x{:04x}", obj_resp.code)));
+                        }
+                        Err(e) => {
+                            failed.push((filename, format!("SendObject 送信エラー: {}", e)));
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    failed.push((filename, format!("SendObjectInfo 応答エラー: 0x{:04x}", resp.code)));
+                }
+                Err(e) => {
+                    failed.push((filename, format!("SendObjectInfo 送信エラー: {}", e)));
+                }
+            }
+        }
+
+        // CloseSession
+        let _ = Self::transact(handle, 0x1003, tx_id, &[]);
+
+        let success = failed.is_empty() && (transferred > 0 || skipped > 0);
+        let message = if transferred > 0 {
+            format!("{} 件のファイルをKindle Scribeへ転送しました（スキップ: {} 件）", transferred, skipped)
+        } else if skipped > 0 {
+            format!("転送対象ファイルはすべて転送済みです（スキップ: {} 件）", skipped)
+        } else if !failed.is_empty() {
+            format!("{} 件のファイル転送に失敗しました", failed.len())
+        } else {
+            "転送対象のファイルがありませんでした".to_string()
+        };
+
+        Ok(crate::models::FileTransferResult {
+            success,
+            transferred_count: transferred,
+            skipped_count: skipped,
+            failed_files: failed,
+            message,
         })
     }
 }
@@ -877,6 +1200,8 @@ pub struct MtpFileInfo {
 struct MtpResponse {
     code: u16,
     data: Vec<u8>,
+    #[allow(dead_code)]
+    params: Vec<u32>,
 }
 
 

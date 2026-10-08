@@ -78,6 +78,7 @@ fn test_end_to_end_kindle_sync() {
         auto_sync: true,
         auto_eject: false,
         subfolder: "Kindle".to_string(),
+        ..SyncConfig::default()
     };
 
     let stats = orchestrator.sync_from_path(&kindle_dir, &config, "Kindle Scribe (Test)", None).unwrap();

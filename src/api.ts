@@ -10,6 +10,8 @@ import {
   VocabLookup,
   SyncProgress,
   SyncedCounts,
+  FileTransferResult,
+  HotfolderStatus,
 } from "./types";
 
 export async function getConfig(): Promise<SyncConfig> {
@@ -131,6 +133,24 @@ export async function getAutostartStatus(): Promise<boolean> {
 
 export async function setAutostart(enable: boolean): Promise<void> {
   await invoke("set_autostart", { enable });
+}
+
+export async function pushFilesToKindle(
+  filePaths: string[],
+  subfolder?: string
+): Promise<FileTransferResult> {
+  return await invoke<FileTransferResult>("push_files_to_kindle", {
+    filePaths,
+    subfolder: subfolder || null,
+  });
+}
+
+export async function getHotfolderStatus(): Promise<HotfolderStatus> {
+  return await invoke<HotfolderStatus>("get_hotfolder_status");
+}
+
+export async function syncHotfolder(): Promise<FileTransferResult> {
+  return await invoke<FileTransferResult>("sync_hotfolder");
 }
 
 export function onDeviceConnected(callback: (device: DeviceInfo) => void): Promise<UnlistenFn> {

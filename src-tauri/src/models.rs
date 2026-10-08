@@ -69,6 +69,28 @@ pub struct SyncConfig {
     pub auto_sync: bool,
     pub auto_eject: bool,
     pub subfolder: String, // optional subfolder, default empty
+    #[serde(default)]
+    pub enable_push: bool, // whether to push local files to Kindle on sync
+    #[serde(default = "default_hotfolder_path")]
+    pub hotfolder_path: String, // local hotfolder directory
+    #[serde(default)]
+    pub hotfolder_dest_subfolder: String, // destination subfolder in Kindle documents/
+    #[serde(default = "default_push_after_action")]
+    pub push_after_action: String, // "record_db" or "move_synced"
+    #[serde(default)]
+    pub auto_convert_epub: bool, // convert EPUB to AZW3/KFX if ebook-convert is available
+}
+
+fn default_hotfolder_path() -> String {
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        user_dirs.home_dir().join("KindleDrop").to_string_lossy().to_string()
+    } else {
+        "~/KindleDrop".to_string()
+    }
+}
+
+fn default_push_after_action() -> String {
+    "record_db".to_string()
 }
 
 fn get_default_documents_dir() -> Option<std::path::PathBuf> {
@@ -130,8 +152,31 @@ impl Default for SyncConfig {
             auto_sync: true,
             auto_eject: false,
             subfolder: String::new(),
+            enable_push: false,
+            hotfolder_path: default_hotfolder_path(),
+            hotfolder_dest_subfolder: String::new(),
+            push_after_action: default_push_after_action(),
+            auto_convert_epub: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FileTransferResult {
+    pub success: bool,
+    pub transferred_count: usize,
+    pub skipped_count: usize,
+    pub failed_files: Vec<(String, String)>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HotfolderStatus {
+    pub enabled: bool,
+    pub folder_path: String,
+    pub exists: bool,
+    pub pending_files_count: usize,
+    pub pending_files: Vec<String>,
 }
 
 pub fn resolve_path(path: &str) -> std::path::PathBuf {
